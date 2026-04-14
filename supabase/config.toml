@@ -1,0 +1,14 @@
+project_id = "sbpuxewnjxsaocixgmtq"
+
+# Let the function validate the user JWT via auth.getUser(jwt). Gateway JWT verification
+# sometimes rejects otherwise-valid sessions (e.g. after key rotation / asymmetric signing).
+[functions.parse-job-url]
+verify_jwt = false
+
+# Same as parse-job-url: gateway was returning 401 while the app session was valid; the
+# function already enforces auth with createClient(..., { global: { headers: { Authorization }}}).getUser().
+[functions.generate-cover-letter]
+verify_jwt = false
+
+[functions.delete-account]
+verify_jwt = false

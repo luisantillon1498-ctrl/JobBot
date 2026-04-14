@@ -1,0 +1,15 @@
+---
+description: Read and update shared agent memory across sessions
+alwaysApply: true
+---
+
+# Shared agent memory
+
+At the **start** of non-trivial work, read `.cursor/agent-memory/index.json` and open any `entries/*.md` files whose titles or tags match the task.
+
+When you learn something that future sessions must remember (decisions, constraints, URLs, “how we do X here”), **write it down**:
+
+1. **New topic:** Copy `.cursor/agent-memory/entries/_template.md` to `entries/<id>.md` (kebab-case `id`), fill it in, and append an object to `index.json` with `id`, `title`, `path`, `updatedAt` (ISO UTC), and optional `tags`.
+2. **Existing topic:** Edit the corresponding `entries/<id>.md` and set `updatedAt` on that entry in `index.json`.
+
+Keep entries factual and minimal. Never store credentials. Follow `.cursor/agent-memory/README.md` for layout and schema.

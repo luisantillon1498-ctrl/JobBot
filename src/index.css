@@ -1,0 +1,105 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* Soft light: warm eggshell / stone — no pure white, easy on the eyes */
+  :root {
+    --background: 44 16% 95%;
+    --foreground: 220 16% 14%;
+
+    --card: 42 14% 98%;
+    --card-foreground: 220 16% 14%;
+
+    --popover: 42 14% 98%;
+    --popover-foreground: 220 16% 14%;
+
+    --primary: 217 82% 58%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 42 12% 91%;
+    --secondary-foreground: 220 18% 18%;
+
+    --muted: 40 10% 91%;
+    --muted-foreground: 38 10% 44%;
+
+    --accent: 42 14% 89%;
+    --accent-foreground: 220 16% 14%;
+
+    --destructive: 0 68% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 65% 40%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 36 88% 48%;
+    --warning-foreground: 0 0% 100%;
+
+    --border: 38 12% 86%;
+    --input: 40 11% 88%;
+    --ring: 217 82% 58%;
+
+    --radius: 0.5rem;
+
+    --sidebar-background: 42 15% 96%;
+    --sidebar-foreground: 220 16% 14%;
+    --sidebar-primary: 217 82% 58%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 40 12% 91%;
+    --sidebar-accent-foreground: 220 16% 14%;
+    --sidebar-border: 38 11% 88%;
+    --sidebar-ring: 217 82% 58%;
+  }
+
+  /* Dim slate: noticeably lighter than the first “soft dark” pass, still clearly dark UI */
+  .dark {
+    --background: 220 16% 19%;
+    --foreground: 210 25% 97%;
+    --card: 218 14% 24%;
+    --card-foreground: 210 25% 97%;
+    --popover: 218 14% 24%;
+    --popover-foreground: 210 25% 97%;
+    --primary: 217 78% 58%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 217 12% 30%;
+    --secondary-foreground: 210 25% 97%;
+    --muted: 216 11% 30%;
+    --muted-foreground: 215 12% 58%;
+    --accent: 217 12% 33%;
+    --accent-foreground: 210 25% 97%;
+    --destructive: 0 50% 44%;
+    --destructive-foreground: 210 25% 97%;
+    --success: 142 58% 42%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 82% 52%;
+    --warning-foreground: 0 0% 100%;
+    --border: 215 11% 38%;
+    --input: 217 11% 32%;
+    --ring: 217 78% 58%;
+    --sidebar-background: 218 14% 22%;
+    --sidebar-foreground: 210 25% 97%;
+    --sidebar-primary: 217 78% 58%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 217 12% 30%;
+    --sidebar-accent-foreground: 210 25% 97%;
+    --sidebar-border: 215 11% 36%;
+    --sidebar-ring: 217 78% 58%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+}
+
+@layer utilities {
+  .glass-card {
+    @apply bg-card/80 backdrop-blur-sm border border-border/50 shadow-sm;
+  }
+}
