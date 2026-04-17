@@ -61,8 +61,13 @@ async function createSteelSession(timeoutMs) {
     return null;
   }
   const data = await res.json();
-  console.log(`[steel] Session created: ${data.id}, liveViewUrl: ${data.sessionViewerUrl}`);
-  return { sessionId: data.id, cdpUrl: data.websocketUrl, liveViewUrl: data.sessionViewerUrl };
+  // Construct CDP URL — Steel returns websocketUrl but it may be null on some plans;
+  // fall back to the canonical wss://connect.steel.dev endpoint with query params.
+  const cdpUrl =
+    data.websocketUrl ||
+    `wss://connect.steel.dev?apiKey=${encodeURIComponent(STEEL_API_KEY)}&sessionId=${encodeURIComponent(data.id)}`;
+  console.log(`[steel] Session created: ${data.id}, cdpUrl: ${cdpUrl}, liveViewUrl: ${data.sessionViewerUrl}`);
+  return { sessionId: data.id, cdpUrl, liveViewUrl: data.sessionViewerUrl };
 }
 
 async function releaseSteelSession(sessionId) {

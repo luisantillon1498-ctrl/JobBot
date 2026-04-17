@@ -45,9 +45,17 @@ test.describe("Application form automation", () => {
     let steelBrowser: import("@playwright/test").Browser | null = null;
 
     if (steelCdpUrl) {
-      steelBrowser = await chromium.connectOverCDP(steelCdpUrl);
-      const steelContext = steelBrowser.contexts()[0];
-      activePage = steelContext.pages()[0] ?? await steelContext.newPage();
+      try {
+        console.log(`[steel] Connecting via CDP: ${steelCdpUrl}`);
+        steelBrowser = await chromium.connectOverCDP(steelCdpUrl);
+        const steelContext = steelBrowser.contexts()[0];
+        activePage = steelContext.pages()[0] ?? await steelContext.newPage();
+        console.log("[steel] CDP connection established");
+      } catch (cdpErr) {
+        console.error("[steel] CDP connection failed, falling back to local browser:", cdpErr);
+        steelBrowser = null;
+        // activePage stays as the local Playwright fixture page
+      }
     }
 
     const paths = await createRunDir(outputBaseDir());
