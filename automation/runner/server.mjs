@@ -95,10 +95,14 @@ function runPlaywright(env) {
     }, RUN_TIMEOUT_MS);
 
     proc.stdout.on("data", (d) => {
-      stdout += d.toString();
+      const chunk = d.toString();
+      stdout += chunk;
+      console.log("[pw]", chunk.trimEnd());
     });
     proc.stderr.on("data", (d) => {
-      stderr += d.toString();
+      const chunk = d.toString();
+      stderr += chunk;
+      console.error("[pw:err]", chunk.trimEnd());
     });
     proc.on("error", (error) => {
       clearTimeout(timeout);
