@@ -61,11 +61,8 @@ async function createSteelSession(timeoutMs) {
     return null;
   }
   const data = await res.json();
-  // Construct CDP URL — Steel returns websocketUrl but it may be null on some plans;
-  // fall back to the canonical wss://connect.steel.dev endpoint with query params.
-  const cdpUrl =
-    data.websocketUrl ||
-    `wss://connect.steel.dev?apiKey=${encodeURIComponent(STEEL_API_KEY)}&sessionId=${encodeURIComponent(data.id)}`;
+  // Always construct CDP URL with apiKey + sessionId — Steel's websocketUrl omits the apiKey header auth.
+  const cdpUrl = `wss://connect.steel.dev?apiKey=${encodeURIComponent(STEEL_API_KEY)}&sessionId=${encodeURIComponent(data.id)}`;
   console.log(`[steel] Session created: ${data.id}, cdpUrl: ${cdpUrl}, liveViewUrl: ${data.sessionViewerUrl}`);
   return { sessionId: data.id, cdpUrl, liveViewUrl: data.sessionViewerUrl };
 }
