@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowDown, ArrowUp, Loader2, Play, RotateCcw, Save } from "lucide-react";
 import { toast } from "sonner";
@@ -412,23 +412,113 @@ export default function ApplicationQueue() {
           </div>
         </div>
 
-        {humanActionRows.length > 0 && (
-          <Alert variant="default" className="border-amber-500/50 bg-amber-500/5">
-            <AlertTitle>Human action required</AlertTitle>
-            <AlertDescription className="space-y-2">
-              <p>{summarizeHandoff(humanActionRows)}</p>
-              {humanActionRows.some((r) => r.automation_last_error) && (
-                <p className="text-xs text-muted-foreground">
-                  Latest detail: {humanActionRows.find((r) => r.automation_last_error)?.automation_last_error}
-                </p>
+        {/* ── Your Queue (human attention required) ─────────────────────── */}
+        {(loading || userRows.length > 0) && (
+          <Card className="border-amber-500/60 bg-amber-500/5">
+            <CardHeader className="pb-3">
+              <div className="flex items-center gap-2">
+                <span className="inline-flex h-2 w-2 rounded-full bg-amber-500 animate-pulse" aria-hidden />
+                <CardTitle className="text-amber-700 dark:text-amber-400">Your Queue</CardTitle>
+              </div>
+              <CardDescription>
+                These applications need your attention before the bot can continue. Complete any verification steps in the
+                browser frame below, then click <strong>Resume Automation</strong>.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {loading ? (
+                <p className="text-muted-foreground py-8 text-center">Loading queue...</p>
+              ) : (
+                <div className="rounded-md border border-amber-500/30">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Company</TableHead>
+                        <TableHead>Role Title</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Selected Resume</TableHead>
+                        <TableHead>Selected Cover Letter</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {userRows.map((row) => (
+                        <React.Fragment key={row.id}>
+                          <TableRow className="bg-amber-500/5 hover:bg-amber-500/10">
+                            <TableCell className="font-medium">
+                              <Link to={`/applications/${row.id}`} state={{ fromPage: "queue" }} className="text-primary hover:underline">
+                                {row.company_name}
+                              </Link>
+                            </TableCell>
+                            <TableCell>
+                              <Link to={`/applications/${row.id}`} state={{ fromPage: "queue" }} className="text-primary hover:underline">
+                                {row.job_title}
+                              </Link>
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex items-center gap-2">
+                                {runningApplicationId === row.id && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" aria-hidden />}
+                                <Badge
+                                  variant="secondary"
+                                  className={
+                                    row.automation_queue_state === "waiting_for_human_action"
+                                      ? "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                                      : ""
+                                  }
+                                >
+                                  {statusLabel(row)}
+                                </Badge>
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-muted-foreground">{row.selected_resume_label}</TableCell>
+                            <TableCell className="text-muted-foreground">{row.selected_cover_label}</TableCell>
+                          </TableRow>
+                          {row.automation_queue_state === "waiting_for_human_action" && row.automation_live_url && (
+                            <TableRow key={`${row.id}-live`}>
+                              <TableCell colSpan={5} className="p-0">
+                                <div className="mt-4 space-y-3 px-4 pb-4">
+                                  <Alert variant="default" className="border-amber-500/50 bg-amber-500/5 py-2">
+                                    <AlertDescription className="text-xs text-muted-foreground space-y-1">
+                                      <p>{summarizeHandoff([row])}</p>
+                                      {row.automation_last_error && (
+                                        <p className="text-xs text-muted-foreground">Detail: {row.automation_last_error}</p>
+                                      )}
+                                    </AlertDescription>
+                                  </Alert>
+                                  <div className="rounded-lg overflow-hidden border border-amber-500/40">
+                                    <div className="px-3 py-2 bg-amber-500/10 flex items-center justify-between">
+                                      <p className="text-sm text-muted-foreground">
+                                        Complete the verification below, then click <strong>Resume Automation</strong> when done.
+                                      </p>
+                                    </div>
+                                    <iframe
+                                      src={row.automation_live_url}
+                                      className="w-full h-[600px]"
+                                      allow="clipboard-read; clipboard-write"
+                                      title="Live browser session — complete verification"
+                                    />
+                                  </div>
+                                  <Button
+                                    onClick={() => void handleResume(row.id)}
+                                    disabled={resumingId === row.id}
+                                    className="w-full bg-amber-600 hover:bg-amber-700 text-white"
+                                  >
+                                    {resumingId === row.id ? "Resuming…" : "Resume Automation"}
+                                  </Button>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </React.Fragment>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
               )}
-              <p className="text-xs text-muted-foreground">
-                Final submit stays disabled until you explicitly approve after review. Server automation still stops before submit.
-              </p>
-            </AlertDescription>
-          </Alert>
+            </CardContent>
+          </Card>
         )}
 
+        {/* ── Bot Queue ─────────────────────────────────────────────────── */}
         <Card>
           <CardHeader>
             <CardTitle>JobBot&apos;s Queue</CardTitle>
@@ -470,8 +560,8 @@ export default function ApplicationQueue() {
                   </TableHeader>
                   <TableBody>
                     {jobBotRows.map((row, index) => (
-                      <>
-                        <TableRow key={row.id}>
+                      <React.Fragment key={row.id}>
+                        <TableRow>
                           <TableCell>
                             <div className="flex items-center gap-1">
                               <span className="min-w-5 text-sm tabular-nums">{row.automation_queue_priority}</span>
@@ -519,117 +609,7 @@ export default function ApplicationQueue() {
                             />
                           </TableCell>
                         </TableRow>
-                        {row.automation_queue_state === "waiting_for_human_action" && row.automation_live_url && (
-                          <TableRow key={`${row.id}-live`}>
-                            <TableCell colSpan={7} className="p-0">
-                              <div className="mt-4 space-y-3 px-4 pb-4">
-                                <div className="rounded-lg overflow-hidden border border-border">
-                                  <div className="px-3 py-2 bg-muted flex items-center justify-between">
-                                    <p className="text-sm text-muted-foreground">
-                                      Complete the verification below, then click <strong>Resume</strong> when done.
-                                    </p>
-                                  </div>
-                                  <iframe
-                                    src={row.automation_live_url}
-                                    className="w-full h-[600px]"
-                                    allow="clipboard-read; clipboard-write"
-                                    title="Live browser session — complete verification"
-                                  />
-                                </div>
-                                <Button
-                                  onClick={() => void handleResume(row.id)}
-                                  disabled={resumingId === row.id}
-                                  className="w-full"
-                                >
-                                  {resumingId === row.id ? "Resuming…" : "Resume Automation"}
-                                </Button>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        )}
-                      </>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>User&apos;s Queue</CardTitle>
-            <CardDescription>Review, human verification, and ready-to-submit approvals.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-              <p className="text-muted-foreground py-8 text-center">Loading queue...</p>
-            ) : userRows.length === 0 ? (
-              <p className="text-muted-foreground py-8 text-center">No user approvals waiting right now.</p>
-            ) : (
-              <div className="rounded-md border border-border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Company</TableHead>
-                      <TableHead>Role Title</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Selected Resume</TableHead>
-                      <TableHead>Selected Cover Letter</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {userRows.map((row) => (
-                      <>
-                        <TableRow key={row.id}>
-                          <TableCell className="font-medium">
-                            <Link to={`/applications/${row.id}`} state={{ fromPage: "queue" }} className="text-primary hover:underline">
-                              {row.company_name}
-                            </Link>
-                          </TableCell>
-                          <TableCell>
-                            <Link to={`/applications/${row.id}`} state={{ fromPage: "queue" }} className="text-primary hover:underline">
-                              {row.job_title}
-                            </Link>
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-2">
-                              {runningApplicationId === row.id && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" aria-hidden />}
-                              <Badge variant="secondary">{statusLabel(row)}</Badge>
-                            </div>
-                          </TableCell>
-                          <TableCell className="text-muted-foreground">{row.selected_resume_label}</TableCell>
-                          <TableCell className="text-muted-foreground">{row.selected_cover_label}</TableCell>
-                        </TableRow>
-                        {row.automation_queue_state === "waiting_for_human_action" && row.automation_live_url && (
-                          <TableRow key={`${row.id}-live`}>
-                            <TableCell colSpan={5} className="p-0">
-                              <div className="mt-4 space-y-3 px-4 pb-4">
-                                <div className="rounded-lg overflow-hidden border border-border">
-                                  <div className="px-3 py-2 bg-muted flex items-center justify-between">
-                                    <p className="text-sm text-muted-foreground">
-                                      Complete the verification below, then click <strong>Resume</strong> when done.
-                                    </p>
-                                  </div>
-                                  <iframe
-                                    src={row.automation_live_url}
-                                    className="w-full h-[600px]"
-                                    allow="clipboard-read; clipboard-write"
-                                    title="Live browser session — complete verification"
-                                  />
-                                </div>
-                                <Button
-                                  onClick={() => void handleResume(row.id)}
-                                  disabled={resumingId === row.id}
-                                  className="w-full"
-                                >
-                                  {resumingId === row.id ? "Resuming…" : "Resume Automation"}
-                                </Button>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        )}
-                      </>
+                      </React.Fragment>
                     ))}
                   </TableBody>
                 </Table>
