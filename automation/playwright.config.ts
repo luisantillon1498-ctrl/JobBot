@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 /**
- * Standalone config for job-board automation (avoids root lovable-agent-playwright-config).
+ * Standalone config for job-board automation (relative paths from this file).
  * Run: npx playwright test -c automation/playwright.config.ts
  */
 export default defineConfig({

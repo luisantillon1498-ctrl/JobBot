@@ -1,13 +1,14 @@
 import { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
-import { LayoutDashboard, FolderOpen, PlusCircle, BarChart3, LogOut, Bot, Settings } from "lucide-react";
+import { LayoutDashboard, FolderOpen, ListOrdered, PlusCircle, BarChart3, LogOut, Bot, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const navItems = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/documents", label: "Documents", icon: FolderOpen },
   { to: "/applications/new", label: "New Application", icon: PlusCircle },
+  { to: "/applications/queue", label: "Application Queue", icon: ListOrdered },
   { to: "/analytics", label: "Analytics", icon: BarChart3 },
   { to: "/settings", label: "Settings", icon: Settings },
 ];

@@ -35,13 +35,18 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 
-const statusColors: Record<string, string> = {
+const stageColors: Record<string, string> = {
   draft: "bg-muted text-muted-foreground",
-  applied: "bg-primary/10 text-primary",
+  applied: "bg-muted text-muted-foreground",
+  not_started: "bg-muted text-muted-foreground",
   screening: "bg-warning/10 text-warning",
   first_round_interview: "bg-warning/10 text-warning",
   second_round_interview: "bg-warning/10 text-warning",
   final_round_interview: "bg-accent/10 text-accent-foreground",
+};
+const submissionStatusColors: Record<string, string> = {
+  draft: "bg-muted text-muted-foreground",
+  submitted: "bg-primary/10 text-primary",
 };
 
 const outcomeColors: Record<string, string> = {
@@ -51,13 +56,18 @@ const outcomeColors: Record<string, string> = {
   ghosted: "bg-muted text-muted-foreground/70",
 };
 
-const statusLabels: Record<string, string> = {
-  draft: "Draft",
-  applied: "Applied",
+const stageLabels: Record<string, string> = {
+  draft: "Not Started",
+  applied: "Not Started",
+  not_started: "Not Started",
   screening: "Screening",
   first_round_interview: "1st Round",
   second_round_interview: "2nd Round",
   final_round_interview: "Final Round",
+};
+const submissionStatusLabels: Record<string, string> = {
+  draft: "Draft",
+  submitted: "Submitted",
 };
 
 const outcomeLabels: Record<string, string> = {
@@ -75,6 +85,7 @@ interface Application {
   company_name: string;
   job_title: string;
   application_status: string;
+  submission_status: string;
   outcome: string | null;
   updated_at: string;
   applied_at: string | null;
@@ -86,6 +97,7 @@ type ApplicationSortKey =
   | "job_title"
   | "company_name"
   | "location"
+  | "submission_status"
   | "application_status"
   | "outcome"
   | "updated_at";
@@ -103,8 +115,13 @@ function compareApplications(
     return (ta - tb) * mul;
   }
   if (key === "application_status") {
-    const va = (statusLabels[a.application_status] || a.application_status).toLowerCase();
-    const vb = (statusLabels[b.application_status] || b.application_status).toLowerCase();
+    const va = (stageLabels[a.application_status] || a.application_status).toLowerCase();
+    const vb = (stageLabels[b.application_status] || b.application_status).toLowerCase();
+    return va.localeCompare(vb, undefined, { sensitivity: "base" }) * mul;
+  }
+  if (key === "submission_status") {
+    const va = (submissionStatusLabels[a.submission_status] || a.submission_status).toLowerCase();
+    const vb = (submissionStatusLabels[b.submission_status] || b.submission_status).toLowerCase();
     return va.localeCompare(vb, undefined, { sensitivity: "base" }) * mul;
   }
   if (key === "outcome") {
@@ -121,6 +138,7 @@ type ApplicationColumnFilters = {
   job_title: string;
   company_name: string;
   location: string;
+  submission_status: string;
   application_status: string;
   outcome: string;
   updated_at: string;
@@ -130,6 +148,7 @@ const EMPTY_COLUMN_FILTERS: ApplicationColumnFilters = {
   job_title: "",
   company_name: "",
   location: "",
+  submission_status: "",
   application_status: "",
   outcome: "",
   updated_at: "",
@@ -146,9 +165,15 @@ function applicationMatchesColumnFilters(app: Application, f: ApplicationColumnF
   if (!inc(app.company_name, f.company_name)) return false;
   if (!inc(app.location ?? "", f.location)) return false;
 
+  if (f.submission_status.trim()) {
+    const q = f.submission_status.trim().toLowerCase();
+    const label = (submissionStatusLabels[app.submission_status] || app.submission_status).toLowerCase();
+    if (!label.includes(q) && !app.submission_status.toLowerCase().includes(q)) return false;
+  }
+
   if (f.application_status.trim()) {
     const q = f.application_status.trim().toLowerCase();
-    const label = (statusLabels[app.application_status] || app.application_status).toLowerCase();
+    const label = (stageLabels[app.application_status] || app.application_status).toLowerCase();
     if (!label.includes(q) && !app.application_status.toLowerCase().includes(q)) return false;
   }
 
@@ -242,7 +267,7 @@ async function loadApplicationsAndSparkle(userId: string): Promise<{
   const { data: apps, error: appsError } = await supabase
     .from("applications")
     .select(
-      "id, company_name, job_title, application_status, outcome, updated_at, applied_at, location, submitted_cover_document_id",
+      "id, company_name, job_title, submission_status, application_status, outcome, updated_at, applied_at, location, submitted_cover_document_id",
     )
     .eq("user_id", userId)
     .order("updated_at", { ascending: false });
@@ -367,6 +392,8 @@ export default function Dashboard() {
             .from("applications")
             .insert({
               user_id: user.id,
+              submission_status: "draft",
+              application_status: "not_started",
               job_url: url,
               company_name: fields.company_name.trim(),
               job_title: fields.job_title.trim(),
@@ -389,8 +416,8 @@ export default function Dashboard() {
             user_id: user.id,
             event_type: "status_change",
             description: scrape.usedFallback
-              ? "Application created from batch import (listing data was limited)"
-              : "Application created from batch import",
+              ? "Application created from batch import as draft (listing data was limited)"
+              : "Application created from batch import as draft",
           });
           if (shouldAutoGenerateCoverLetter(scrape, fields)) {
             try {
@@ -463,7 +490,7 @@ export default function Dashboard() {
 
   const stats = {
     total: applications.length,
-    active: applications.filter(a => !a.outcome && a.application_status !== "draft").length,
+    active: applications.filter(a => !a.outcome && a.submission_status === "submitted").length,
     accepted: applications.filter(a => a.outcome === "offer_accepted").length,
     rejected: applications.filter(a => a.outcome === "rejected").length,
   };
@@ -673,15 +700,26 @@ export default function Dashboard() {
                           className="min-w-[100px]"
                         />
                         <FilterableSortableColumnHead
-                          label="Status"
+                          label="Submission Status"
+                          columnKey="submission_status"
+                          activeKey={sortKey}
+                          dir={sortDir}
+                          onSort={handleApplicationSort}
+                          filterValue={columnFilters.submission_status}
+                          onFilterChange={(v) => setColumnFilter("submission_status", v)}
+                          filterPlaceholder="e.g. Submitted"
+                          filterAriaLabel="Filter by submission status"
+                        />
+                        <FilterableSortableColumnHead
+                          label="Application Stage"
                           columnKey="application_status"
                           activeKey={sortKey}
                           dir={sortDir}
                           onSort={handleApplicationSort}
                           filterValue={columnFilters.application_status}
                           onFilterChange={(v) => setColumnFilter("application_status", v)}
-                          filterPlaceholder="e.g. Draft"
-                          filterAriaLabel="Filter by status"
+                          filterPlaceholder="e.g. Screening"
+                          filterAriaLabel="Filter by application stage"
                         />
                         <FilterableSortableColumnHead
                           label="Outcome"
@@ -738,6 +776,7 @@ export default function Dashboard() {
                           <TableCell className="font-medium max-w-[220px]">
                             <Link
                               to={`/applications/${app.id}`}
+                              state={{ fromPage: "dashboard" }}
                               className="text-primary hover:underline truncate block"
                               title={app.job_title}
                             >
@@ -755,8 +794,13 @@ export default function Dashboard() {
                             </span>
                           </TableCell>
                           <TableCell>
-                            <Badge className={statusColors[app.application_status]} variant="secondary">
-                              {statusLabels[app.application_status] || app.application_status}
+                            <Badge className={submissionStatusColors[app.submission_status]} variant="secondary">
+                              {submissionStatusLabels[app.submission_status] || app.submission_status}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Badge className={stageColors[app.application_status]} variant="secondary">
+                              {stageLabels[app.application_status] || app.application_status}
                             </Badge>
                           </TableCell>
                           <TableCell>

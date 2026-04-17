@@ -14,18 +14,35 @@ export type ApplicationEventType =
   | "document_generated"
   | "follow_up"
   | "outcome_change"
+  | "automation_status"
 
 /** Matches public.documents.type CHECK constraint */
 export type DocumentType = "resume" | "cover_letter_template" | "other"
 
-/** Matches app pipelines (no DB CHECK on column after status refactor) */
+/** Matches public.applications.application_status CHECK constraint */
 export type ApplicationStatus =
-  | "draft"
-  | "applied"
+  | "not_started"
   | "screening"
   | "first_round_interview"
   | "second_round_interview"
   | "final_round_interview"
+
+/** Matches public.applications.submission_status CHECK constraint */
+export type ApplicationSubmissionStatus = "draft" | "submitted"
+
+/**
+ * JobBot execution state machine (public.applications.automation_queue_state / automation_last_outcome).
+ * Transitions should be logged with application_events.event_type = 'automation_status' and metadata.
+ */
+export type ApplicationAutomationQueueState =
+  | "queued"
+  | "autofilling"
+  | "waiting_for_human_action"
+  | "human_action_completed"
+  | "waiting_for_review"
+  | "ready_to_submit"
+  | "submitted"
+  | "failed"
 
 /** Matches UI outcomes (outcome is nullable text in DB) */
 export type ApplicationOutcome = "rejected" | "withdrew" | "offer_accepted" | "ghosted"
@@ -84,6 +101,62 @@ export type Database = {
           },
         ]
       }
+      application_automation_sessions: {
+        Row: {
+          application_id: string
+          created_at: string
+          ended_at: string | null
+          handoff_completed_at: string | null
+          handoff_reason: string | null
+          handoff_required_at: string | null
+          id: string
+          metadata: Json
+          run_log: Json
+          screenshot_storage_paths: Json
+          started_at: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          application_id: string
+          created_at?: string
+          ended_at?: string | null
+          handoff_completed_at?: string | null
+          handoff_reason?: string | null
+          handoff_required_at?: string | null
+          id?: string
+          metadata?: Json
+          run_log?: Json
+          screenshot_storage_paths?: Json
+          started_at?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          application_id?: string
+          created_at?: string
+          ended_at?: string | null
+          handoff_completed_at?: string | null
+          handoff_reason?: string | null
+          handoff_required_at?: string | null
+          id?: string
+          metadata?: Json
+          run_log?: Json
+          screenshot_storage_paths?: Json
+          started_at?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "application_automation_sessions_application_id_fkey"
+            columns: ["application_id"]
+            isOneToOne: false
+            referencedRelation: "applications"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       application_events: {
         Row: {
           application_id: string
@@ -124,6 +197,14 @@ export type Database = {
       }
       applications: {
         Row: {
+          automation_active_session_id: string | null
+          automation_last_context: Json
+          automation_last_error: string | null
+          automation_last_outcome: ApplicationAutomationQueueState | null
+          automation_queue_excluded: boolean
+          automation_queue_priority: number
+          automation_last_run_at: string | null
+          automation_queue_state: ApplicationAutomationQueueState
           application_status: ApplicationStatus
           applied_at: string | null
           company_name: string
@@ -136,12 +217,21 @@ export type Database = {
           notes: string | null
           outcome: ApplicationOutcome | null
           salary_range: string | null
+          submission_status: ApplicationSubmissionStatus
           submitted_cover_document_id: string | null
           submitted_resume_document_id: string | null
           updated_at: string
           user_id: string
         }
         Insert: {
+          automation_active_session_id?: string | null
+          automation_last_context?: Json
+          automation_last_error?: string | null
+          automation_last_outcome?: ApplicationAutomationQueueState | null
+          automation_queue_excluded?: boolean
+          automation_queue_priority?: number
+          automation_last_run_at?: string | null
+          automation_queue_state?: ApplicationAutomationQueueState
           application_status?: ApplicationStatus
           applied_at?: string | null
           company_name: string
@@ -154,12 +244,21 @@ export type Database = {
           notes?: string | null
           outcome?: ApplicationOutcome | null
           salary_range?: string | null
+          submission_status?: ApplicationSubmissionStatus
           submitted_cover_document_id?: string | null
           submitted_resume_document_id?: string | null
           updated_at?: string
           user_id: string
         }
         Update: {
+          automation_active_session_id?: string | null
+          automation_last_context?: Json
+          automation_last_error?: string | null
+          automation_last_outcome?: ApplicationAutomationQueueState | null
+          automation_queue_excluded?: boolean
+          automation_queue_priority?: number
+          automation_last_run_at?: string | null
+          automation_queue_state?: ApplicationAutomationQueueState
           application_status?: ApplicationStatus
           applied_at?: string | null
           company_name?: string
@@ -172,12 +271,21 @@ export type Database = {
           notes?: string | null
           outcome?: ApplicationOutcome | null
           salary_range?: string | null
+          submission_status?: ApplicationSubmissionStatus
           submitted_cover_document_id?: string | null
           submitted_resume_document_id?: string | null
           updated_at?: string
           user_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "applications_automation_active_session_id_fkey"
+            columns: ["automation_active_session_id"]
+            isOneToOne: false
+            referencedRelation: "application_automation_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       documents: {
         Row: {
@@ -261,40 +369,82 @@ export type Database = {
       }
       profiles: {
         Row: {
+          address_line1: string | null
+          address_line2: string | null
+          city: string | null
           cover_letter_tone: string
           created_at: string
+          country: string | null
+          date_of_birth: string | null
           default_resume_document_id: string | null
+          disability_status: string
+          first_name: string | null
           full_name: string | null
           id: string
           linkedin_url: string | null
+          last_name: string | null
+          middle_name: string | null
           onboarded: boolean
+          postal_code: string | null
+          phone_country_code: string | null
+          professional_email: string | null
           phone: string | null
+          state_region: string | null
           updated_at: string
           user_id: string
+          veteran_status: string
         }
         Insert: {
+          address_line1?: string | null
+          address_line2?: string | null
+          city?: string | null
           cover_letter_tone?: string
           created_at?: string
+          country?: string | null
+          date_of_birth?: string | null
           default_resume_document_id?: string | null
+          disability_status?: string
+          first_name?: string | null
           full_name?: string | null
           id?: string
           linkedin_url?: string | null
+          last_name?: string | null
+          middle_name?: string | null
           onboarded?: boolean
+          postal_code?: string | null
+          phone_country_code?: string | null
+          professional_email?: string | null
           phone?: string | null
+          state_region?: string | null
           updated_at?: string
           user_id: string
+          veteran_status?: string
         }
         Update: {
+          address_line1?: string | null
+          address_line2?: string | null
+          city?: string | null
           cover_letter_tone?: string
           created_at?: string
+          country?: string | null
+          date_of_birth?: string | null
           default_resume_document_id?: string | null
+          disability_status?: string
+          first_name?: string | null
           full_name?: string | null
           id?: string
           linkedin_url?: string | null
+          last_name?: string | null
+          middle_name?: string | null
           onboarded?: boolean
+          postal_code?: string | null
+          phone_country_code?: string | null
+          professional_email?: string | null
           phone?: string | null
+          state_region?: string | null
           updated_at?: string
           user_id?: string
+          veteran_status?: string
         }
         Relationships: [
           {

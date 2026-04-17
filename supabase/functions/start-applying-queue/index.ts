@@ -1,0 +1,626 @@
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
+const RUNNER_TIMEOUT_MS = 120_000;
+const SIGNED_URL_TTL_SECONDS = 2 * 60 * 60;
+const PG_INT_MAX = 2147483647;
+
+/** Persisted `applications.automation_queue_state` — same vocabulary as the executor outcome logger. */
+type QueueState =
+  | "queued"
+  | "autofilling"
+  | "waiting_for_human_action"
+  | "human_action_completed"
+  | "waiting_for_review"
+  | "ready_to_submit"
+  | "submitted"
+  | "failed";
+
+type RunnerResult = {
+  ok?: boolean;
+  status?: string;
+  message?: string;
+  hard_blocker?: boolean;
+  final_url?: string;
+  artifacts?: Record<string, unknown>;
+  unanswered_questions?: unknown[];
+  blocked_reason?: string;
+  error?: string;
+  steel_live_url?: string;
+  steel_session_id?: string;
+};
+
+function json(status: number, body: Record<string, unknown>) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+function pickRunnerError(res: RunnerResult, fallback: string): string {
+  const candidates = [res.error, res.message, res.blocked_reason];
+  for (const item of candidates) {
+    if (typeof item === "string" && item.trim()) return item.trim();
+  }
+  return fallback;
+}
+
+function sanitizeStorageFileName(value: string): string {
+  return value
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 120) || "file.txt";
+}
+
+/** Mirrors `automation/lib/siteDetection.ts` for queue payload metadata. */
+function atsTargetFromJobUrl(jobUrl: string): "greenhouse" | "workday" | "ashby" | "unknown" {
+  try {
+    const u = new URL(jobUrl);
+    const h = u.hostname.toLowerCase();
+    if (h.includes("greenhouse.io")) return "greenhouse";
+    if (
+      h.includes("myworkdayjobs.com") ||
+      h.includes("wd103.myworkday.com") ||
+      (h.includes("workday.com") && jobUrl.toLowerCase().includes("myworkdayjobs"))
+    ) {
+      return "workday";
+    }
+    if (h.includes("ashbyhq.com")) return "ashby";
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function handoffCategoryFromText(...parts: (string | undefined)[]): string | null {
+  const blob = parts.filter(Boolean).join(" ").toLowerCase();
+  if (blob.includes("captcha") || blob.includes("recaptcha") || blob.includes("hcaptcha") || blob.includes("turnstile")) {
+    return "captcha";
+  }
+  if (blob.includes("two-factor") || blob.includes("2fa") || blob.includes("verification code")) return "two_factor";
+  if (blob.includes("login") || blob.includes("sign in")) return "login";
+  if (blob.includes("multi-step")) return "multi_step";
+  return null;
+}
+
+const APPLICATION_SELECT =
+  "id, user_id, job_url, company_name, job_title, job_description, submission_status, automation_queue_priority, automation_queue_excluded, automation_queue_state, submitted_resume_document_id, submitted_cover_document_id";
+
+serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+  if (req.method !== "POST") return json(405, { error: "Method not allowed" });
+
+  try {
+    let clientApplicationIds: string[] | null = null;
+    let resumeMode = false;
+    const contentType = req.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      try {
+        const parsed = (await req.json()) as Record<string, unknown>;
+        if (Array.isArray(parsed.application_ids) && parsed.application_ids.length > 0) {
+          const ids = parsed.application_ids.filter((x): x is string => typeof x === "string" && x.length > 0);
+          if (ids.length > 0) clientApplicationIds = ids;
+        }
+        resumeMode = parsed.resume === true;
+      } catch {
+        /* ignore invalid JSON */
+      }
+    }
+
+    const authHeader = req.headers.get("authorization");
+    if (!authHeader) return json(401, { error: "Not authenticated" });
+
+    const anonClient = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_ANON_KEY")!,
+      { global: { headers: { Authorization: authHeader } } },
+    );
+    const { data: { user }, error: authError } = await anonClient.auth.getUser();
+    if (authError || !user) return json(401, { error: "Invalid auth" });
+
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (!serviceRoleKey) {
+      return json(500, { error: "Missing SUPABASE_SERVICE_ROLE_KEY secret for queue handoff." });
+    }
+    const runnerUrl = Deno.env.get("JOBPAL_AUTOMATION_RUNNER_URL")?.trim();
+    if (!runnerUrl) {
+      return json(500, { error: "Missing JOBPAL_AUTOMATION_RUNNER_URL secret for queue handoff." });
+    }
+
+    const runnerToken = Deno.env.get("JOBPAL_AUTOMATION_RUNNER_TOKEN")?.trim();
+    const serviceClient = createClient(Deno.env.get("SUPABASE_URL")!, serviceRoleKey, {
+      auth: { persistSession: false },
+    });
+
+    type AppRow = {
+      id: string;
+      user_id: string;
+      job_url: string | null;
+      company_name: string | null;
+      job_title: string | null;
+      job_description: string | null;
+      submission_status: string;
+      automation_queue_priority: number;
+      automation_queue_excluded: boolean;
+      automation_queue_state: string;
+      submitted_resume_document_id: string | null;
+      submitted_cover_document_id: string | null;
+    };
+
+    let queue: AppRow[] = [];
+
+    if (clientApplicationIds && clientApplicationIds.length > 0) {
+      const { data: rows, error: byIdError } = await serviceClient
+        .from("applications")
+        .select(APPLICATION_SELECT)
+        .eq("user_id", user.id)
+        .in("id", clientApplicationIds)
+        .neq("submission_status", "submitted");
+      if (byIdError) return json(500, { error: byIdError.message || "Could not load applications" });
+      const rowById = new Map((rows ?? []).map((r) => [String((r as AppRow).id), r as AppRow]));
+      let ordered = clientApplicationIds.map((id) => rowById.get(id)).filter((r): r is AppRow => Boolean(r));
+      ordered = ordered.filter((r) => !r.automation_queue_excluded && Boolean(r.job_url));
+      if (resumeMode) {
+        ordered = ordered.filter((r) => r.automation_queue_state === "waiting_for_human_action");
+      }
+      queue = ordered;
+    } else {
+      const { data: apps, error: appsError } = await serviceClient
+        .from("applications")
+        .select(APPLICATION_SELECT)
+        .eq("user_id", user.id)
+        .eq("automation_queue_excluded", false)
+        .neq("submission_status", "submitted")
+        .order("automation_queue_priority", { ascending: true })
+        .order("created_at", { ascending: true });
+      if (appsError) return json(500, { error: appsError.message || "Could not load queue" });
+      let fromDb = (apps ?? []) as AppRow[];
+      if (resumeMode) {
+        fromDb = fromDb.filter((r) => r.automation_queue_state === "waiting_for_human_action");
+      }
+      queue = fromDb.filter((row) => row.job_url);
+    }
+
+    if (queue.length === 0) {
+      return json(200, {
+        ok: true,
+        processed: 0,
+        skipped: resumeMode
+          ? "No applications in waiting_for_human_action matched this resume request."
+          : "No queued applications with job URLs.",
+        outcomes: [],
+        stopped_by_hard_blocker: false,
+      });
+    }
+
+    const { data: profile } = await serviceClient
+      .from("profiles")
+      .select(
+        "first_name, middle_name, last_name, professional_email, phone, linkedin_url, city, state_region, country, veteran_status, disability_status, default_resume_document_id",
+      )
+      .eq("user_id", user.id)
+      .single();
+
+    async function ensureCoverFromArtifact(args: {
+      applicationId: string;
+      companyName: string;
+      jobTitle: string;
+      artifact: { id: string; content: string };
+    }): Promise<string | null> {
+      const existing = await serviceClient
+        .from("documents")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("source_generated_artifact_id", args.artifact.id)
+        .maybeSingle();
+      if (existing.data?.id) return existing.data.id;
+
+      const safeBase = sanitizeStorageFileName(
+        `cover_${args.companyName}_${args.jobTitle}_${args.artifact.id.slice(0, 8)}.txt`,
+      );
+      const filePath = `${user.id}/${Date.now()}_${safeBase}`;
+      const contentBlob = new Blob([args.artifact.content], { type: "text/plain;charset=utf-8" });
+      const uploaded = await serviceClient.storage.from("documents").upload(filePath, contentBlob, {
+        contentType: "text/plain;charset=utf-8",
+        upsert: false,
+      });
+      if (uploaded.error) return null;
+
+      const fileSize = contentBlob.size > PG_INT_MAX ? null : contentBlob.size;
+      const inserted = await serviceClient
+        .from("documents")
+        .insert({
+          user_id: user.id,
+          name: `Cover letter — ${args.companyName} — ${args.jobTitle}.txt`,
+          type: "cover_letter_template",
+          file_path: filePath,
+          file_size: fileSize,
+          source_generated_artifact_id: args.artifact.id,
+        })
+        .select("id")
+        .single();
+
+      if (inserted.error || !inserted.data?.id) {
+        await serviceClient.storage.from("documents").remove([filePath]);
+        return null;
+      }
+
+      await serviceClient.from("application_documents").insert({
+        application_id: args.applicationId,
+        document_id: inserted.data.id,
+        user_id: user.id,
+      });
+
+      return inserted.data.id;
+    }
+
+    async function logState(args: {
+      appId: string;
+      state: QueueState;
+      description: string;
+      reason?: string;
+      context?: Record<string, unknown>;
+    }) {
+      const now = new Date().toISOString();
+      const context = {
+        queue_handoff: true,
+        queue_run_at: now,
+        ...(args.context ?? {}),
+      };
+      const metadata = {
+        queue_state: args.state,
+        failure_reason: args.reason ?? null,
+        context,
+      };
+
+      await serviceClient.from("application_events").insert({
+        application_id: args.appId,
+        user_id: user.id,
+        event_type: "automation_status",
+        description: args.description,
+        metadata,
+      });
+
+      await serviceClient
+        .from("applications")
+        .update({
+          automation_queue_state: args.state,
+          automation_last_run_at: now,
+          automation_last_outcome: args.state,
+          automation_last_error: args.reason ?? null,
+          automation_last_context: metadata,
+        })
+        .eq("id", args.appId)
+        .eq("user_id", user.id)
+        .neq("submission_status", "submitted");
+    }
+
+    const outcomes: Array<{
+      application_id: string;
+      state: QueueState;
+      hard_blocker: boolean;
+      reason?: string;
+      steel_live_url?: string;
+    }> = [];
+    let hardStop = false;
+
+    for (const app of queue) {
+      if (hardStop) break;
+      const appId = String(app.id);
+
+      await logState({
+        appId,
+        state: "autofilling",
+        description: "Queue handoff started browser automation",
+        context: { queue_priority: app.automation_queue_priority, job_url: app.job_url },
+      });
+
+      let resumeDocumentId = app.submitted_resume_document_id ?? profile?.default_resume_document_id ?? null;
+      let coverDocumentId = app.submitted_cover_document_id ?? null;
+
+      if (!app.submitted_resume_document_id && resumeDocumentId) {
+        await serviceClient
+          .from("applications")
+          .update({ submitted_resume_document_id: resumeDocumentId })
+          .eq("id", appId)
+          .eq("user_id", user.id)
+          .neq("submission_status", "submitted");
+      }
+
+      if (!coverDocumentId) {
+        const existingLinkedCover = await serviceClient
+          .from("application_documents")
+          .select("document_id, documents!inner(id, type)")
+          .eq("application_id", appId)
+          .eq("user_id", user.id)
+          .eq("documents.type", "cover_letter_template")
+          .limit(1)
+          .maybeSingle();
+        if (existingLinkedCover.data?.document_id) {
+          coverDocumentId = existingLinkedCover.data.document_id;
+        }
+      }
+
+      if (!coverDocumentId) {
+        const latestArtifact = await serviceClient
+          .from("generated_artifacts")
+          .select("id, content")
+          .eq("application_id", appId)
+          .eq("user_id", user.id)
+          .eq("type", "cover_letter")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (latestArtifact.data?.id && latestArtifact.data.content) {
+          coverDocumentId = await ensureCoverFromArtifact({
+            applicationId: appId,
+            companyName: app.company_name || "Company",
+            jobTitle: app.job_title || "Role",
+            artifact: { id: latestArtifact.data.id, content: latestArtifact.data.content },
+          });
+        }
+      }
+
+      if (!coverDocumentId) {
+        const resumeForGeneration = resumeDocumentId
+          ? await serviceClient
+              .from("documents")
+              .select("file_path")
+              .eq("id", resumeDocumentId)
+              .eq("user_id", user.id)
+              .maybeSingle()
+          : { data: null };
+
+        const generateRes = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/generate-cover-letter`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: authHeader,
+            apikey: Deno.env.get("SUPABASE_ANON_KEY")!,
+          },
+          body: JSON.stringify({
+            application_id: appId,
+            job_title: app.job_title ?? "",
+            company_name: app.company_name ?? "",
+            job_description: app.job_description ?? "",
+            resume_path: resumeForGeneration.data?.file_path ?? null,
+          }),
+        });
+
+        if (generateRes.ok) {
+          const generatedArtifact = await serviceClient
+            .from("generated_artifacts")
+            .select("id, content")
+            .eq("application_id", appId)
+            .eq("user_id", user.id)
+            .eq("type", "cover_letter")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (generatedArtifact.data?.id && generatedArtifact.data.content) {
+            coverDocumentId = await ensureCoverFromArtifact({
+              applicationId: appId,
+              companyName: app.company_name || "Company",
+              jobTitle: app.job_title || "Role",
+              artifact: { id: generatedArtifact.data.id, content: generatedArtifact.data.content },
+            });
+          }
+        }
+      }
+
+      if (!app.submitted_cover_document_id && coverDocumentId) {
+        await serviceClient
+          .from("applications")
+          .update({ submitted_cover_document_id: coverDocumentId })
+          .eq("id", appId)
+          .eq("user_id", user.id)
+          .neq("submission_status", "submitted");
+      }
+
+      const docsToLoad = [resumeDocumentId, coverDocumentId].filter(Boolean) as string[];
+      let docById = new Map<string, { file_path: string; name: string }>();
+      if (docsToLoad.length > 0) {
+        const { data: docs } = await serviceClient
+          .from("documents")
+          .select("id, file_path, name")
+          .eq("user_id", user.id)
+          .in("id", docsToLoad);
+        docById = new Map((docs ?? []).map((d) => [d.id, { file_path: d.file_path, name: d.name }]));
+      }
+
+      let resumeSignedUrl: string | null = null;
+      let coverSignedUrl: string | null = null;
+      const resumeDoc = resumeDocumentId ? docById.get(resumeDocumentId) : undefined;
+      const coverDoc = coverDocumentId ? docById.get(coverDocumentId) : undefined;
+      if (resumeDoc?.file_path) {
+        const signed = await serviceClient.storage.from("documents").createSignedUrl(resumeDoc.file_path, SIGNED_URL_TTL_SECONDS);
+        if (!signed.error) resumeSignedUrl = signed.data.signedUrl;
+      }
+      if (coverDoc?.file_path) {
+        const signed = await serviceClient.storage.from("documents").createSignedUrl(coverDoc.file_path, SIGNED_URL_TTL_SECONDS);
+        if (!signed.error) coverSignedUrl = signed.data.signedUrl;
+      }
+
+      const runnerPayload = {
+        application_id: appId,
+        user_id: user.id,
+        job_url: app.job_url,
+        ats_target: atsTargetFromJobUrl(String(app.job_url)),
+        stop_before_submit: true,
+        applicant: {
+          first_name: profile?.first_name ?? null,
+          middle_name: profile?.middle_name ?? null,
+          last_name: profile?.last_name ?? null,
+          email: profile?.professional_email ?? null,
+          phone: profile?.phone ?? null,
+          linkedin_url: profile?.linkedin_url ?? null,
+          location: [profile?.city, profile?.state_region, profile?.country].filter(Boolean).join(", ") || null,
+          veteran_status: profile?.veteran_status ?? null,
+          disability_status: profile?.disability_status ?? null,
+        },
+        documents: {
+          resume: resumeDoc
+            ? { id: resumeDocumentId, name: resumeDoc.name, file_path: resumeDoc.file_path, signed_url: resumeSignedUrl }
+            : null,
+          cover_letter: coverDoc
+            ? { id: coverDocumentId, name: coverDoc.name, file_path: coverDoc.file_path, signed_url: coverSignedUrl }
+            : null,
+        },
+        policies: {
+          eligibility_answers: "only_when_confident",
+          unknown_question_behavior: "pause_and_flag",
+          continue_on_failure: true,
+        },
+      };
+
+      let runnerResponse: Response | null = null;
+      try {
+        runnerResponse = await fetch(runnerUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(runnerToken ? { Authorization: `Bearer ${runnerToken}` } : {}),
+          },
+          body: JSON.stringify(runnerPayload),
+          signal: AbortSignal.timeout(RUNNER_TIMEOUT_MS),
+        });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "Runner call failed";
+        await logState({
+          appId,
+          state: "waiting_for_human_action",
+          description: "Queue handoff blocked: could not reach automation runner",
+          reason,
+          context: { hard_blocker: true, handoff_category: "runner_unreachable" },
+        });
+        outcomes.push({ application_id: appId, state: "waiting_for_human_action", hard_blocker: true, reason });
+        hardStop = true;
+        continue;
+      }
+
+      let body: RunnerResult = {};
+      try {
+        body = (await runnerResponse.json()) as RunnerResult;
+      } catch {
+        body = {};
+      }
+
+      if (!runnerResponse.ok) {
+        const reason = pickRunnerError(body, `Runner returned ${runnerResponse.status}`);
+        const hard = body.hard_blocker === true;
+        await logState({
+          appId,
+          state: hard ? "waiting_for_human_action" : "failed",
+          description: hard ? "Queue run hit hard blocker" : "Queue run failed",
+          reason,
+          context: {
+            hard_blocker: hard,
+            handoff_category: hard ? handoffCategoryFromText(reason) : null,
+          },
+        });
+        outcomes.push({ application_id: appId, state: hard ? "waiting_for_human_action" : "failed", hard_blocker: hard, reason });
+        if (hard) hardStop = true;
+        continue;
+      }
+
+      const unanswered = Array.isArray(body.unanswered_questions) ? body.unanswered_questions : [];
+      if (unanswered.length > 0) {
+        const reason = "Unanswered eligibility question requires review";
+        await logState({
+          appId,
+          state: "waiting_for_human_action",
+          description: "Queue run paused for unanswered question",
+          reason,
+          context: {
+            unanswered_questions: unanswered,
+            artifacts: body.artifacts ?? null,
+            final_url: body.final_url ?? null,
+            handoff_category: "unanswered_question",
+          },
+        });
+        outcomes.push({ application_id: appId, state: "waiting_for_human_action", hard_blocker: false, reason });
+        continue;
+      }
+
+      const returnedStatus = typeof body.status === "string" ? body.status : "";
+      const finalState: QueueState =
+        returnedStatus === "waiting_for_human_action"
+          ? "waiting_for_human_action"
+          : returnedStatus === "blocked"
+            ? "waiting_for_human_action"
+            : returnedStatus === "failed"
+              ? "failed"
+              : "waiting_for_review";
+      const reason =
+        finalState === "waiting_for_review"
+          ? undefined
+          : finalState === "waiting_for_human_action" && returnedStatus === "waiting_for_human_action"
+            ? pickRunnerError(body, "Human verification required before autofill can continue")
+            : pickRunnerError(body, "Run did not complete");
+
+      const runnerMsg = pickRunnerError(body, "");
+      const handoffCat =
+        finalState === "waiting_for_human_action"
+          ? handoffCategoryFromText(runnerMsg, typeof body.message === "string" ? body.message : "", returnedStatus)
+          : null;
+
+      await logState({
+        appId,
+        state: finalState,
+        description:
+          finalState === "waiting_for_review"
+            ? "Autofill completed; queue handoff stopped before submit and is waiting for review"
+            : finalState === "waiting_for_human_action"
+              ? returnedStatus === "waiting_for_human_action"
+                ? "Queue handoff paused for human verification (headed re-run or live session required)"
+                : "Queue handoff paused due to blocker"
+              : "Queue handoff marked failed",
+        reason,
+        context: {
+          artifacts: body.artifacts ?? null,
+          final_url: body.final_url ?? null,
+          hard_blocker: body.hard_blocker === true,
+          handoff_category: handoffCat,
+          steel_live_url: body.steel_live_url ?? null,
+          steel_session_id: body.steel_session_id ?? null,
+        },
+      });
+
+      if (finalState === "waiting_for_human_action" && body.steel_live_url) {
+        await serviceClient
+          .from("applications")
+          .update({ automation_live_url: body.steel_live_url })
+          .eq("id", appId)
+          .eq("user_id", user.id);
+      }
+
+      outcomes.push({
+        application_id: appId,
+        state: finalState,
+        hard_blocker: body.hard_blocker === true,
+        reason,
+        ...(body.steel_live_url ? { steel_live_url: body.steel_live_url } : {}),
+      });
+      if (body.hard_blocker === true) hardStop = true;
+    }
+
+    return json(200, {
+      ok: true,
+      processed: outcomes.length,
+      stopped_by_hard_blocker: hardStop,
+      outcomes,
+    });
+  } catch (error) {
+    return json(500, {
+      error: error instanceof Error ? error.message : "Unexpected error",
+    });
+  }
+});

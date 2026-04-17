@@ -13,6 +13,7 @@ import Dashboard from "./pages/Dashboard";
 import Documents from "./pages/Documents";
 import NewApplication from "./pages/NewApplication";
 import ApplicationDetail from "./pages/ApplicationDetail";
+import ApplicationQueue from "./pages/ApplicationQueue";
 import Analytics from "./pages/Analytics";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
@@ -87,6 +88,7 @@ const App = () => (
               <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
               <Route path="/documents" element={<ProtectedRoute><Documents /></ProtectedRoute>} />
               <Route path="/applications/new" element={<ProtectedRoute><NewApplication /></ProtectedRoute>} />
+              <Route path="/applications/queue" element={<ProtectedRoute><ApplicationQueue /></ProtectedRoute>} />
               <Route path="/applications/:id" element={<ProtectedRoute><ApplicationDetail /></ProtectedRoute>} />
               <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
               <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />

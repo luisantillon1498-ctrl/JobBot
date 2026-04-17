@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs wc:*)",
+      "Bash(find src/pages -type f -name \"*.tsx\" -exec wc -l {} \\\\;)",
+      "Bash(wc -l automation/lib/*.ts automation/runner/*.mjs automation/types.ts)",
+      "mcp__Claude_Preview__preview_start"
+    ]
+  }
+}

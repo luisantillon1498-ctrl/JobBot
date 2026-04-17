@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
+import type { Database } from "@/integrations/supabase/types";
 import { AppLayout } from "@/components/AppLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 
-const STATUS_COLORS: Record<string, string> = {
+const STAGE_COLORS: Record<string, string> = {
   draft: "#94a3b8",
-  applied: "#3b82f6",
+  applied: "#94a3b8",
+  not_started: "#94a3b8",
   screening: "#f59e0b",
   first_round_interview: "#f59e0b",
   second_round_interview: "#f59e0b",
@@ -21,8 +23,10 @@ const OUTCOME_COLORS: Record<string, string> = {
   ghosted: "#6b7280",
 };
 
-const statusLabels: Record<string, string> = {
-  draft: "Draft", applied: "Applied", screening: "Screening",
+const stageLabels: Record<string, string> = {
+  draft: "Not Started",
+  applied: "Not Started",
+  not_started: "Not Started", screening: "Screening",
   first_round_interview: "1st Round", second_round_interview: "2nd Round",
   final_round_interview: "Final Round",
 };
@@ -33,19 +37,24 @@ const outcomeLabels: Record<string, string> = {
 
 export default function Analytics() {
   const { user } = useAuth();
-  const [apps, setApps] = useState<any[]>([]);
+  type ApplicationRow = Database["public"]["Tables"]["applications"]["Row"];
+  type AnalyticsAppRow = Pick<
+    ApplicationRow,
+    "submission_status" | "application_status" | "outcome" | "created_at" | "company_name"
+  >;
+  const [apps, setApps] = useState<AnalyticsAppRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!user) return;
-    supabase.from("applications").select("application_status, outcome, created_at, company_name").eq("user_id", user.id).then(({ data }) => {
+    supabase.from("applications").select("submission_status, application_status, outcome, created_at, company_name").eq("user_id", user.id).then(({ data }) => {
       setApps(data || []);
       setLoading(false);
     });
   }, [user]);
 
-  const statusCounts = apps.reduce((acc, a) => {
-    const label = statusLabels[a.application_status] || a.application_status;
+  const stageCounts = apps.reduce((acc, a) => {
+    const label = stageLabels[a.application_status] || a.application_status;
     acc[label] = (acc[label] || 0) + 1;
     return acc;
   }, {} as Record<string, number>);
@@ -58,7 +67,7 @@ export default function Analytics() {
     return acc;
   }, {} as Record<string, number>);
 
-  const statusPieData = Object.entries(statusCounts).map(([name, value]) => ({ name, value }));
+  const stagePieData = Object.entries(stageCounts).map(([name, value]) => ({ name, value }));
   const outcomePieData = Object.entries(outcomeCounts).map(([name, value]) => ({ name, value }));
 
   const monthly = apps.reduce((acc, a) => {
@@ -69,7 +78,7 @@ export default function Analytics() {
   const barData = Object.entries(monthly).map(([month, count]) => ({ month, count }));
 
   const responseRate = apps.length > 0
-    ? Math.round((apps.filter(a => !["draft", "applied"].includes(a.application_status)).length / apps.length) * 100)
+    ? Math.round((apps.filter(a => a.submission_status === "submitted").length / apps.length) * 100)
     : 0;
 
   const offerCount = apps.filter(a => a.outcome === "offer_accepted").length;
@@ -111,14 +120,14 @@ export default function Analytics() {
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <Card>
-                <CardHeader><CardTitle>Applications by Status</CardTitle></CardHeader>
+                <CardHeader><CardTitle>Applications by Stage</CardTitle></CardHeader>
                 <CardContent>
                   <div className="h-64">
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
-                        <Pie data={statusPieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label={({ name, value }) => `${name}: ${value}`}>
-                          {statusPieData.map((entry) => (
-                            <Cell key={entry.name} fill={STATUS_COLORS[Object.keys(statusLabels).find(k => statusLabels[k] === entry.name) || ""] || "#94a3b8"} />
+                        <Pie data={stagePieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label={({ name, value }) => `${name}: ${value}`}>
+                          {stagePieData.map((entry) => (
+                            <Cell key={entry.name} fill={STAGE_COLORS[Object.keys(stageLabels).find(k => stageLabels[k] === entry.name) || ""] || "#94a3b8"} />
                           ))}
                         </Pie>
                         <Tooltip />

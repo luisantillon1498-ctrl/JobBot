@@ -16,7 +16,7 @@ type Parsed = {
 };
 
 /** Bumped when extraction logic changes — check Network response for `parse-job-url` to confirm deploy. */
-const PARSER_REV = "20260414b";
+const PARSER_REV = "20260416a";
 
 function serializeParsed(p: Parsed): string {
   return JSON.stringify({ ...p, _parser_rev: PARSER_REV });
@@ -421,6 +421,113 @@ async function withGreenhousePublicApi(
   return enrichParsedFromDescription(merged);
 }
 
+// ---------------------------------------------------------------------------
+// Ashby public posting API
+// ---------------------------------------------------------------------------
+
+/** jobs.ashbyhq.com/{orgSlug}/{jobId}[?...] → { orgSlug, jobId } or null */
+function parseAshbyJobUrl(pageUrl: string): { orgSlug: string; jobId: string } | null {
+  try {
+    const u = new URL(pageUrl);
+    if (!u.hostname.includes("ashbyhq.com")) return null;
+    const parts = u.pathname.split("/").filter(Boolean);
+    // Expect /{orgSlug}/{uuid} with optional trailing segments
+    if (parts.length < 2) return null;
+    const orgSlug = parts[0];
+    const jobId = parts[1];
+    if (!/^[a-z0-9-]+$/i.test(orgSlug)) return null;
+    // Ashby job IDs are UUIDs
+    if (!/^[0-9a-f-]{32,}$/i.test(jobId)) return null;
+    return { orgSlug, jobId };
+  } catch {
+    return null;
+  }
+}
+
+/** Call Ashby posting API and find the specific job by ID. Returns parsed fields or null. */
+async function fetchAshbyJobFromApi(
+  orgSlug: string,
+  jobId: string,
+): Promise<Partial<Parsed> | null> {
+  const apiUrl = `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(orgSlug)}`;
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 22_000);
+    const r = await fetch(apiUrl, {
+      headers: { Accept: "application/json" },
+      redirect: "follow",
+      signal: ctrl.signal,
+    }).finally(() => clearTimeout(to));
+    if (!r.ok) {
+      console.error("Ashby API HTTP", r.status, orgSlug, jobId);
+      return null;
+    }
+    const board = await r.json() as Record<string, unknown>;
+    const postings = Array.isArray(board.jobPostings) ? board.jobPostings as Record<string, unknown>[] : [];
+    // Match by id (UUID, case-insensitive)
+    const job = postings.find(
+      (p) => typeof p.id === "string" && p.id.toLowerCase() === jobId.toLowerCase(),
+    );
+    if (!job) {
+      console.error("Ashby job not found in board listing", orgSlug, jobId);
+      return null;
+    }
+
+    const job_title = typeof job.title === "string" ? job.title.trim() : "";
+
+    // Company name: board-level organizationName or title-case org slug
+    let company_name = "";
+    if (typeof board.organizationName === "string" && board.organizationName.trim()) {
+      company_name = board.organizationName.trim();
+    } else {
+      company_name = orgSlug
+        .split(/[-_]+/)
+        .filter(Boolean)
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+        .join(" ");
+    }
+
+    // Location: locationName or isRemote flag
+    let location = "";
+    if (typeof job.locationName === "string" && job.locationName.trim()) {
+      location = job.locationName.trim();
+    }
+    if (!location && job.isRemote === true) {
+      location = "Remote";
+    }
+    // secondaryLocations
+    if (!location && Array.isArray(job.secondaryLocations)) {
+      const names: string[] = (job.secondaryLocations as Record<string, unknown>[])
+        .map((l) => (typeof l.locationName === "string" ? l.locationName.trim() : ""))
+        .filter(Boolean);
+      if (names.length) location = names.join(" · ");
+    }
+
+    // Description: descriptionPlain > descriptionHtml stripped
+    let job_description = "";
+    if (typeof job.descriptionPlain === "string" && job.descriptionPlain.trim()) {
+      job_description = job.descriptionPlain.trim().slice(0, 50_000);
+    } else if (typeof job.descriptionHtml === "string" && job.descriptionHtml.trim()) {
+      job_description = stripToText(job.descriptionHtml, 50_000);
+    }
+
+    // Compensation
+    let salary_range = "";
+    const comp = job.compensation;
+    if (comp && typeof comp === "object") {
+      const c = comp as Record<string, unknown>;
+      const summaryStr = typeof c.summary === "string" ? c.summary.trim() : "";
+      if (summaryStr) salary_range = summaryStr;
+    }
+
+    if (!job_title && !company_name && !job_description) return null;
+    return { company_name, job_title, job_description, location, salary_range };
+  } catch (e) {
+    console.error("Ashby API error", e);
+    return null;
+  }
+}
+
 /** Jina AI Reader: fetches pages from their edge (often succeeds when Supabase IPs are blocked). Optional JINA_API_KEY secret for higher limits. */
 async function fetchViaJinaReader(pageUrl: string): Promise<string | null> {
   const endpoint = `https://r.jina.ai/${pageUrl}`;
@@ -458,7 +565,8 @@ function extractLabeledField(text: string, labels: string[]): string {
     `(?:^|\\n)\\s*(?:\\*\\*)?(?:${alt})(?:\\*\\*)?\\s*:\\s*(.+?)(?=\\n|$)`,
     "im",
   );
-  let v = text.match(sameLine)?.[1]?.trim() ?? "";
+  const sameLineValue = text.match(sameLine)?.[1]?.trim() ?? "";
+  let v = sameLineValue;
   if (!v || v.length < 2) {
     const nextLine = new RegExp(
       `(?:^|\\n)\\s*(?:\\*\\*)?(?:${alt})(?:\\*\\*)?\\s*:?\\s*\\n+\\s*([^\\n#]{2,500})`,
@@ -500,7 +608,7 @@ function inferLocationFromFreeText(text: string): string {
   ];
   for (const re of candidates) {
     const m = text.match(re);
-    let v = (m && (m[1] ?? m[0]))?.trim();
+    const v = (m && (m[1] ?? m[0]))?.trim();
     if (!v) continue;
     if (/^https?:\/\//i.test(v)) continue;
     if (v.length >= 2) {
@@ -819,7 +927,7 @@ function isPlaceholderLocation(value: string): boolean {
 /** Fill structured fields from description when still empty (common on Greenhouse, LinkedIn, Jina). */
 function enrichParsedFromDescription(p: Parsed): Parsed {
   const corpus = inferenceCorpus(p);
-  let job_title = inferSeniorityForTitle(p.job_title, corpus);
+  const job_title = inferSeniorityForTitle(p.job_title, corpus);
   let location = (p.location || "").trim();
   let salary_range = (p.salary_range || "").trim();
   if (isPlaceholderLocation(location)) location = "";
@@ -886,7 +994,7 @@ function parseJinaReaderText(raw: string, pageUrl: string): Parsed {
 
   const job_description = body.slice(0, 15_000) || raw.slice(0, 15_000) || `Source: ${pageUrl}`;
 
-  let location = extractLabeledField(body, [
+  const location = extractLabeledField(body, [
     "Available Locations",
     "Available Location",
     "Location",
@@ -944,7 +1052,7 @@ function parseHtmlPage(html: string, pageUrl: string): Parsed {
 
   let job_title = ld?.job_title?.trim() || ogTitle?.trim() || "";
   if (!job_title && tit) {
-    job_title = tit.replace(/\s*[|\u2013\-]\s*.+$/, "").trim() || tit;
+    job_title = tit.replace(/\s*[|\u2013-]\s*.+$/, "").trim() || tit;
   }
   job_title = stripRoleAtCompanySuffix(job_title);
   if (!job_title) job_title = "Open role";
@@ -976,8 +1084,8 @@ function parseHtmlPage(html: string, pageUrl: string): Parsed {
     job_description = `Source: ${pageUrl}`;
   }
 
-  let location = ld?.location?.trim() || "";
-  let salary_range = ld?.salary_range?.trim() || "";
+  const location = ld?.location?.trim() || "";
+  const salary_range = ld?.salary_range?.trim() || "";
 
   return enrichParsedFromDescription({
     company_name,
@@ -1038,6 +1146,26 @@ serve(async (req) => {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    }
+
+    // 0) Ashby SPA — use the public posting API directly; HTML scraping yields nothing useful.
+    const ashbyRef = parseAshbyJobUrl(target.href);
+    if (ashbyRef) {
+      const ashbyJob = await fetchAshbyJobFromApi(ashbyRef.orgSlug, ashbyRef.jobId);
+      if (ashbyJob && (ashbyJob.job_title || ashbyJob.company_name)) {
+        const full: Parsed = enrichParsedFromDescription({
+          company_name: ashbyJob.company_name || "",
+          job_title: ashbyJob.job_title || "",
+          job_description: ashbyJob.job_description || "",
+          location: ashbyJob.location || "",
+          salary_range: ashbyJob.salary_range || "",
+        });
+        return new Response(serializeParsed(full), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      // API failed — fall through to Jina Reader / generic scrape as best-effort
+      console.warn("Ashby API returned no data for", ashbyRef.orgSlug, ashbyRef.jobId, "— falling back to Jina");
     }
 
     // 1) Direct fetch from Supabase edge (fast; often blocked by ATS / bot protection).

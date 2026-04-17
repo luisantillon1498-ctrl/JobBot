@@ -1,3 +1,3 @@
-# Welcome to your Lovable project
+# JobPal Pro
 
-TODO: Document your project here
+Local development and deployment instructions belong here.

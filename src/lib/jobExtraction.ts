@@ -406,7 +406,7 @@ function isPlaceholderLocation(value: string): boolean {
 /** Re-run description heuristics after merging with form (so location/salary fill even when API omits them). */
 export function enrichExtractedFromDescription(f: ExtractedJobFields): ExtractedJobFields {
   const corpus = inferenceCorpus(f);
-  let job_title = inferSeniorityForTitle(f.job_title, corpus);
+  const job_title = inferSeniorityForTitle(f.job_title, corpus);
   let location = f.location.trim();
   let salary_range = f.salary_range.trim();
   if (isPlaceholderLocation(location)) location = "";
@@ -533,7 +533,7 @@ export async function extractJobFromUrl(
   supabase: SupabaseClient<Database>,
   jobUrl: string,
 ): Promise<ExtractJobFromUrlResult> {
-  let { data: sessionData } = await supabase.auth.getSession();
+  const { data: sessionData } = await supabase.auth.getSession();
   let session = sessionData.session;
   const nowSec = Math.floor(Date.now() / 1000);
   if (session?.expires_at && session.expires_at <= nowSec + 120) {

@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Frontend (Vite)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 8080
+    },
+    {
+      "name": "Automation Runner",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "runner:start"],
+      "port": 8080
+    }
+  ]
+}

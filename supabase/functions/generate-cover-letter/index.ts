@@ -2,7 +2,7 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 /** Increment when system prompt, user template, or decoding strategy changes (stored on each artifact). */
-const COVER_LETTER_GENERATOR_VERSION = "cover-letter.8";
+const COVER_LETTER_GENERATOR_VERSION = "cover-letter.10";
 
 const TONE_GUIDANCE: Record<string, string> = {
   professional:
@@ -54,10 +54,7 @@ function interviewProgressScore(
     case "screening":
       base = 0.65;
       break;
-    case "applied":
-      base = 0.35;
-      break;
-    case "draft":
+    case "not_started":
       base = 0.12;
       break;
     default:
@@ -91,8 +88,7 @@ function statusNarrative(status: string, outcome: string | null): string {
   if (outcome === "withdrew") return "Withdrawn";
   if (outcome === "ghosted") return "No response (ghosted)";
   const map: Record<string, string> = {
-    draft: "Draft / not yet submitted",
-    applied: "Applied",
+    not_started: "Not started / pre-screening",
     screening: "Screening / early conversations",
     first_round_interview: "Invited to interview (first round)",
     second_round_interview: "Advanced to further interview rounds",
@@ -113,6 +109,15 @@ function excerptFromArtifact(content: string, maxLen: number): string {
   const t = content.replace(/\s+/g, " ").trim().replace(/"""/g, '"');
   if (t.length <= maxLen) return t;
   return `${t.slice(0, maxLen).trim()}…`;
+}
+
+function parseUserEditFeedback(promptUsed: string | null): string | null {
+  if (!promptUsed) return null;
+  const marker = "feedback=";
+  const idx = promptUsed.indexOf(marker);
+  if (idx < 0) return null;
+  const raw = promptUsed.slice(idx + marker.length).trim();
+  return raw ? raw.slice(0, 600) : null;
 }
 
 function delay(ms: number): Promise<void> {
@@ -139,6 +144,18 @@ function retryAfterMsFromResponse(res: Response, attemptIndex: number): number {
     if (Number.isFinite(sec) && sec >= 0) return Math.min(Math.max(sec * 1000, 500), 25000);
   }
   return [2000, 5000, 10000][attemptIndex] ?? 8000;
+}
+
+function isTransientOverload(status: number, errText: string): boolean {
+  if (status === 429 || status === 500 || status === 503 || status === 504) return true;
+  const msg = (parseProviderErrorMessage(errText) ?? errText).toLowerCase();
+  return (
+    msg.includes("high demand") ||
+    msg.includes("overloaded") ||
+    msg.includes("temporarily unavailable") ||
+    msg.includes("try again later") ||
+    msg.includes("resource exhausted")
+  );
 }
 
 const corsHeaders = {
@@ -316,6 +333,26 @@ serve(async (req) => {
             })
             .join("\n\n")}\n`;
 
+    const { data: editedRows } = await supabaseClient
+      .from("generated_artifacts")
+      .select("content, prompt_used, created_at")
+      .eq("user_id", user.id)
+      .eq("type", "cover_letter")
+      .like("generator_version", "user-edit.%")
+      .order("created_at", { ascending: false })
+      .limit(6);
+
+    const feedbackPoints = (editedRows ?? [])
+      .map((r) => parseUserEditFeedback((r as { prompt_used: string | null }).prompt_used))
+      .filter((x): x is string => Boolean(x));
+    const dedupedFeedback = [...new Set(feedbackPoints)].slice(0, 5);
+    const feedbackBlock =
+      dedupedFeedback.length > 0
+        ? `\n## User feedback from prior cover-letter edits\nApply these preferences where relevant:\n${dedupedFeedback
+            .map((f, i) => `- ${i + 1}. ${f}`)
+            .join("\n")}\n`
+        : "";
+
     const referenceFingerprintBuf = await crypto.subtle.digest(
       "SHA-256",
       new TextEncoder().encode(referenceBlock),
@@ -333,6 +370,7 @@ Position: ${job_title}
 ${jobDescriptionBlock}
 ${resumeBlock}
 ${referenceBlock}
+${feedbackBlock}
 Voice and tone: ${toneInstruction}
 
 Write a compelling cover letter (typically 3-4 paragraphs) that:
@@ -356,6 +394,7 @@ Return only the cover letter text, no headers or metadata.`;
       resume_path,
       peer_snapshot,
       reference_fingerprint,
+      user_feedback_points: dedupedFeedback,
     });
     const seedBytes = new Uint8Array(
       await crypto.subtle.digest("SHA-256", new TextEncoder().encode(seedMaterial)),
@@ -363,8 +402,9 @@ Return only the cover letter text, no headers or metadata.`;
     const seed = new DataView(seedBytes.buffer).getUint32(0, false) & 0x7fffffff;
 
     let content: string;
+    let usedGemini = useGemini;
 
-    if (useGemini) {
+    if (usedGemini) {
       const geminiUrl =
         `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}` +
         `:generateContent?key=${encodeURIComponent(geminiApiKey)}`;
@@ -397,20 +437,25 @@ Return only the cover letter text, no headers or metadata.`;
         aiResponse = await doGeminiFetch();
       }
 
-      let last429Body = "";
-      for (let rateAttempt = 0; !aiResponse.ok && aiResponse.status === 429 && rateAttempt < 3; rateAttempt++) {
-        last429Body = await aiResponse.text().catch(() => "");
-        console.warn("Gemini 429, backing off:", rateAttempt + 1, last429Body.slice(0, 200));
+      let lastBackoffBody = "";
+      for (let rateAttempt = 0; !aiResponse.ok && rateAttempt < 3; rateAttempt++) {
+        const attemptBody = await aiResponse.text().catch(() => "");
+        if (!isTransientOverload(aiResponse.status, attemptBody)) {
+          lastBackoffBody = attemptBody;
+          break;
+        }
+        lastBackoffBody = attemptBody;
+        console.warn("Gemini transient overload, backing off:", aiResponse.status, rateAttempt + 1, attemptBody.slice(0, 200));
         await delay(retryAfterMsFromResponse(aiResponse, rateAttempt));
         aiResponse = await doGeminiFetch();
       }
 
       if (!aiResponse.ok) {
-        const errText =
-          aiResponse.status === 429
-            ? ((await aiResponse.text().catch(() => "")) || last429Body)
-            : await aiResponse.text().catch(() => "");
-        if (aiResponse.status === 429) {
+        const errText = (await aiResponse.text().catch(() => "")) || lastBackoffBody;
+        if (isTransientOverload(aiResponse.status, errText) && openaiApiKey) {
+          console.warn("Gemini unavailable; falling back to OpenAI-compatible provider");
+          usedGemini = false;
+        } else if (aiResponse.status === 429) {
           const detail = parseProviderErrorMessage(errText);
           return jsonOk({
             ok: false,
@@ -420,34 +465,55 @@ Return only the cover letter text, no headers or metadata.`;
                 : "The model provider rate-limited this request (HTTP 429). Wait 1–2 minutes and try again."),
             code: "rate_limited",
           });
+        } else if (isTransientOverload(aiResponse.status, errText)) {
+          const detail = parseProviderErrorMessage(errText);
+          return jsonOk({
+            ok: false,
+            error:
+              detail ??
+              "The model provider is temporarily overloaded. Please retry shortly.",
+            code: "provider_unavailable",
+          });
+        } else {
+          console.error("Gemini generateContent error:", aiResponse.status, errText.slice(0, 800));
+          const hint =
+            (parseProviderErrorMessage(errText) ?? errText.trim().slice(0, 400)) || `HTTP ${aiResponse.status}`;
+          return jsonOk({ ok: false, error: `AI generation failed: ${hint}`, code: "ai_provider" });
         }
-        console.error("Gemini generateContent error:", aiResponse.status, errText.slice(0, 800));
-        const hint =
-          (parseProviderErrorMessage(errText) ?? errText.trim().slice(0, 400)) || `HTTP ${aiResponse.status}`;
-        return jsonOk({ ok: false, error: `AI generation failed: ${hint}`, code: "ai_provider" });
       }
 
-      const aiData = await aiResponse.json() as {
-        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }>;
-        promptFeedback?: { blockReason?: string };
-        error?: { message?: string };
-      };
+      if (usedGemini) {
+        const aiData = await aiResponse.json() as {
+          candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }>;
+          promptFeedback?: { blockReason?: string };
+          error?: { message?: string };
+        };
 
-      if (aiData.promptFeedback?.blockReason) {
+        if (aiData.promptFeedback?.blockReason) {
+          return jsonOk({
+            ok: false,
+            error: `Generation blocked (${aiData.promptFeedback.blockReason}).`,
+            code: "blocked",
+          });
+        }
+
+        const parts = aiData.candidates?.[0]?.content?.parts ?? [];
+        const textOut = parts.map((p) => (typeof p.text === "string" ? p.text : "")).join("").trim();
+        if (!textOut) {
+          return jsonOk({ ok: false, error: "No content generated", code: "empty_completion" });
+        }
+        content = textOut;
+      }
+    }
+
+    if (!usedGemini) {
+      if (!openaiApiKey) {
         return jsonOk({
           ok: false,
-          error: `Generation blocked (${aiData.promptFeedback.blockReason}).`,
-          code: "blocked",
+          error: "Gemini is temporarily unavailable and no OPENAI_API_KEY fallback is configured.",
+          code: "provider_unavailable",
         });
       }
-
-      const parts = aiData.candidates?.[0]?.content?.parts ?? [];
-      const textOut = parts.map((p) => (typeof p.text === "string" ? p.text : "")).join("").trim();
-      if (!textOut) {
-        return jsonOk({ ok: false, error: "No content generated", code: "empty_completion" });
-      }
-      content = textOut;
-    } else {
       const chatUrl = `${openaiBase}/chat/completions`;
       const chatHeaders = {
         Authorization: `Bearer ${openaiApiKey}`,

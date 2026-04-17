@@ -1,16 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import { useParams, Link, useNavigate } from "react-router-dom";
+import { useParams, Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { invokeGenerateCoverLetter } from "@/lib/coverLetterGenerate";
 import { getResumePathForGeneration } from "@/lib/resumeForGeneration";
 import { ensureGeneratedCoverLetterInVault } from "@/lib/saveGeneratedCoverToVault";
 import { AppLayout } from "@/components/AppLayout";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -34,7 +36,7 @@ import {
 import { ArrowLeft, ChevronDown, ExternalLink, Sparkles, Clock, FileText, Paperclip, X, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn, sanitizeStorageFileName } from "@/lib/utils";
-import type { DocumentType } from "@/integrations/supabase/types";
+import type { Database, DocumentType } from "@/integrations/supabase/types";
 
 const PG_INT_MAX = 2147483647;
 
@@ -42,22 +44,35 @@ const UPLOAD_RESUME_KEY = "__upload_resume__";
 const UPLOAD_COVER_KEY = "__upload_cover__";
 const UPLOAD_OTHER_KEY = "__upload_other__";
 
-const applicationStatuses = ["draft", "applied", "screening", "first_round_interview", "second_round_interview", "final_round_interview"];
+const applicationStages = ["not_started", "screening", "first_round_interview", "second_round_interview", "final_round_interview"];
+const submissionStatuses = ["draft", "submitted"];
 const outcomes = ["rejected", "withdrew", "offer_accepted", "ghosted"];
 
-const statusLabels: Record<string, string> = {
-  draft: "Draft", applied: "Applied", screening: "Screening",
+const stageLabels: Record<string, string> = {
+  draft: "Not Started",
+  applied: "Not Started",
+  not_started: "Not Started", screening: "Screening",
   first_round_interview: "1st Round Interview", second_round_interview: "2nd Round Interview",
   final_round_interview: "Final Round Interview",
+};
+const submissionStatusLabels: Record<string, string> = {
+  draft: "Draft",
+  submitted: "Submitted",
 };
 const outcomeLabels: Record<string, string> = {
   rejected: "Rejected", withdrew: "Withdrew", offer_accepted: "Offer Accepted", ghosted: "Ghosted",
 };
 
-const statusColors: Record<string, string> = {
-  draft: "bg-muted text-muted-foreground", applied: "bg-primary/10 text-primary",
+const stageColors: Record<string, string> = {
+  draft: "bg-muted text-muted-foreground",
+  applied: "bg-muted text-muted-foreground",
+  not_started: "bg-muted text-muted-foreground",
   screening: "bg-warning/10 text-warning", first_round_interview: "bg-warning/10 text-warning",
   second_round_interview: "bg-warning/10 text-warning", final_round_interview: "bg-accent/10 text-accent-foreground",
+};
+const submissionStatusColors: Record<string, string> = {
+  draft: "bg-muted text-muted-foreground",
+  submitted: "bg-primary/10 text-primary",
 };
 const outcomeColors: Record<string, string> = {
   rejected: "bg-destructive/10 text-destructive", withdrew: "bg-muted text-muted-foreground",
@@ -69,21 +84,41 @@ type DeleteDialog =
   | { kind: "artifact"; artifactId: string }
   | { kind: "vaultDocument"; docId: string; filePath: string; displayName: string };
 
+type ApplicationRow = Database["public"]["Tables"]["applications"]["Row"];
+type ApplicationEventRow = Database["public"]["Tables"]["application_events"]["Row"];
+type GeneratedArtifactRow = Database["public"]["Tables"]["generated_artifacts"]["Row"];
+type ApplicationDocumentRow = Database["public"]["Tables"]["application_documents"]["Row"];
+type DocumentRow = Database["public"]["Tables"]["documents"]["Row"];
+type LinkedDocumentRow = ApplicationDocumentRow & { documents: DocumentRow | null };
+
 export default function ApplicationDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
-  const [app, setApp] = useState<any>(null);
-  const [events, setEvents] = useState<any[]>([]);
-  const [artifacts, setArtifacts] = useState<any[]>([]);
-  const [linkedDocs, setLinkedDocs] = useState<any[]>([]);
-  const [allDocs, setAllDocs] = useState<any[]>([]);
+  const fromPage =
+    location.state && typeof location.state === "object" && "fromPage" in location.state
+      ? (location.state as { fromPage?: string }).fromPage
+      : undefined;
+  const backHref = fromPage === "queue" ? "/applications/queue" : "/dashboard";
+  const backLabel = fromPage === "queue" ? "Back to Application Queue" : "Back to Dashboard";
+
+  const [app, setApp] = useState<ApplicationRow | null>(null);
+  const [events, setEvents] = useState<ApplicationEventRow[]>([]);
+  const [artifacts, setArtifacts] = useState<GeneratedArtifactRow[]>([]);
+  const [linkedDocs, setLinkedDocs] = useState<LinkedDocumentRow[]>([]);
+  const [allDocs, setAllDocs] = useState<DocumentRow[]>([]);
   const [generating, setGenerating] = useState(false);
   const [loading, setLoading] = useState(true);
   const [deleteDialog, setDeleteDialog] = useState<DeleteDialog | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [artifactExpanded, setArtifactExpanded] = useState<Record<string, boolean>>({});
   const [submissionBusy, setSubmissionBusy] = useState(false);
+  const [markReadyBusy, setMarkReadyBusy] = useState(false);
+  const [editingArtifactId, setEditingArtifactId] = useState<string | null>(null);
+  const [editContent, setEditContent] = useState("");
+  const [editFeedback, setEditFeedback] = useState("");
+  const [savingEditedArtifact, setSavingEditedArtifact] = useState(false);
   const [attachSelectValue, setAttachSelectValue] = useState<string | undefined>(undefined);
   const [attachUploading, setAttachUploading] = useState(false);
   const attachFileInputRef = useRef<HTMLInputElement>(null);
@@ -100,9 +135,9 @@ export default function ApplicationDetail() {
       supabase.from("application_documents").select("*").eq("application_id", id),
       supabase.from("documents").select("*").eq("user_id", user.id).order("created_at", { ascending: false }),
     ]);
-    const allDocsList = docsRes.data || [];
-    const docById = new Map(allDocsList.map((d: { id: string }) => [d.id, d]));
-    const linkedMerged = (linkedRes.data || []).map((row: { document_id: string }) => ({
+    const allDocsList = (docsRes.data || []) as DocumentRow[];
+    const docById = new Map(allDocsList.map((d) => [d.id, d]));
+    const linkedMerged: LinkedDocumentRow[] = ((linkedRes.data || []) as ApplicationDocumentRow[]).map((row) => ({
       ...row,
       documents: docById.get(row.document_id) ?? null,
     }));
@@ -117,18 +152,120 @@ export default function ApplicationDetail() {
 
   useEffect(() => { fetchData(); }, [user, id]);
 
-  const updateStatus = async (newStatus: string) => {
+  const updateStage = async (newStage: string) => {
     if (!user || !id) return;
-    const oldStatus = app.application_status;
+    const oldStage = app.application_status;
     await supabase.from("applications").update({
-      application_status: newStatus,
-      ...(newStatus === "applied" && !app.applied_at ? { applied_at: new Date().toISOString() } : {}),
+      application_status: newStage,
     }).eq("id", id);
     await supabase.from("application_events").insert({
       application_id: id, user_id: user.id, event_type: "status_change",
-      description: `Status changed from ${statusLabels[oldStatus] || oldStatus} to ${statusLabels[newStatus] || newStatus}`,
+      description: `Application stage changed from ${stageLabels[oldStage] || oldStage} to ${stageLabels[newStage] || newStage}`,
     });
-    toast.success("Status updated");
+    toast.success("Application stage updated");
+    fetchData();
+  };
+
+  const updateSubmissionStatus = async (newSubmissionStatus: string) => {
+    if (!user || !id || !app) return;
+    const oldSubmissionStatus = app.submission_status;
+    const now = new Date().toISOString();
+    const appliedPatch =
+      newSubmissionStatus === "submitted" && !app.applied_at ? { applied_at: now } : {};
+
+    const automationPatch =
+      newSubmissionStatus === "submitted"
+        ? {
+            automation_queue_state: "submitted" as const,
+            automation_last_outcome: "submitted" as const,
+            automation_last_run_at: now,
+            automation_last_error: null,
+            automation_last_context: {
+              queue_state: "submitted",
+              lifecycle_phase: "submitted",
+              source: "user_submission_status",
+              session_id: app.automation_active_session_id,
+            },
+          }
+        : {};
+
+    const { error: updateError } = await supabase
+      .from("applications")
+      .update({
+        submission_status: newSubmissionStatus,
+        ...appliedPatch,
+        ...automationPatch,
+      })
+      .eq("id", id);
+    if (updateError) {
+      toast.error(updateError.message);
+      return;
+    }
+
+    await supabase.from("application_events").insert({
+      application_id: id, user_id: user.id, event_type: "status_change",
+      description: `Submission status changed from ${submissionStatusLabels[oldSubmissionStatus] || oldSubmissionStatus} to ${submissionStatusLabels[newSubmissionStatus] || newSubmissionStatus}`,
+    });
+    if (newSubmissionStatus === "submitted") {
+      await supabase.from("application_events").insert({
+        application_id: id,
+        user_id: user.id,
+        event_type: "automation_status",
+        description: "Marked submitted — JobBot queue state aligned with submission",
+        metadata: {
+          queue_state: "submitted",
+          lifecycle_phase: "submitted",
+          session_id: app.automation_active_session_id,
+          pause: false,
+        },
+      });
+      if (app.automation_active_session_id) {
+        await supabase
+          .from("application_automation_sessions")
+          .update({ ended_at: now })
+          .eq("id", app.automation_active_session_id)
+          .eq("user_id", user.id);
+      }
+    }
+    toast.success("Submission status updated");
+    fetchData();
+  };
+
+  const markReadyToSubmitAfterReview = async () => {
+    if (!user || !id || !app) return;
+    setMarkReadyBusy(true);
+    const now = new Date().toISOString();
+    const metadata = {
+      queue_state: "ready_to_submit" as const,
+      context: { source: "user_review_complete" },
+      session_id: app.automation_active_session_id,
+      pause: false,
+    };
+    const { error } = await supabase
+      .from("applications")
+      .update({
+        automation_queue_state: "ready_to_submit",
+        automation_last_outcome: "ready_to_submit",
+        automation_last_run_at: now,
+        automation_last_error: null,
+        automation_last_context: metadata,
+      })
+      .eq("id", id)
+      .eq("user_id", user.id);
+    if (error) {
+      toast.error(error.message);
+      setMarkReadyBusy(false);
+      return;
+    }
+    await supabase.from("application_events").insert({
+      application_id: id,
+      user_id: user.id,
+      event_type: "automation_status",
+      description: "User marked application ready to submit after reviewing JobBot output",
+      metadata,
+    });
+    toast.success("Marked ready to submit");
+    setMarkReadyBusy(false);
     fetchData();
   };
 
@@ -294,7 +431,7 @@ export default function ApplicationDetail() {
     if (!user || !id) return;
     setSubmissionBusy(true);
     // Controlled Radix Checkbox needs parent state to update immediately or the click appears to do nothing.
-    setApp((p: any) => (p ? { ...p, ...patch } : p));
+    setApp((p) => (p ? { ...p, ...patch } : p));
     try {
       const { error } = await supabase.from("applications").update(patch).eq("id", id);
       if (error) {
@@ -337,9 +474,7 @@ export default function ApplicationDetail() {
     if (!checked) {
       const coverId = app.submitted_cover_document_id;
       if (!coverId) return;
-      const doc = allDocs.find((d: { id: string }) => d.id === coverId) as
-        | { id: string; source_generated_artifact_id?: string | null }
-        | undefined;
+      const doc = allDocs.find((d) => d.id === coverId);
       if (doc?.source_generated_artifact_id === artifact.id) {
         await updateSubmissionDocs({ submitted_cover_document_id: null });
       }
@@ -358,7 +493,7 @@ export default function ApplicationDetail() {
         toast.error(result.error);
         return;
       }
-      setApp((p: any) => (p ? { ...p, submitted_cover_document_id: result.documentId } : p));
+      setApp((p) => (p ? { ...p, submitted_cover_document_id: result.documentId } : p));
       const { error } = await supabase
         .from("applications")
         .update({ submitted_cover_document_id: result.documentId })
@@ -397,10 +532,66 @@ export default function ApplicationDetail() {
     setGenerating(false);
   };
 
+  const startEditingArtifact = (artifact: GeneratedArtifactRow) => {
+    setEditingArtifactId(artifact.id);
+    setEditContent(artifact.content ?? "");
+    setEditFeedback("");
+    setArtifactExpanded((prev) => ({ ...prev, [artifact.id]: true }));
+  };
+
+  const cancelEditingArtifact = () => {
+    setEditingArtifactId(null);
+    setEditContent("");
+    setEditFeedback("");
+  };
+
+  const saveEditedCoverLetterVersion = async (artifact: GeneratedArtifactRow) => {
+    if (!user || !id) return;
+    const trimmed = editContent.trim();
+    if (!trimmed) {
+      toast.error("Cover letter text cannot be empty.");
+      return;
+    }
+    setSavingEditedArtifact(true);
+    try {
+      const feedback = editFeedback.trim();
+      const promptUsed = [
+        "USER_EDIT_VERSION",
+        `source_artifact_id=${artifact.id}`,
+        `source_created_at=${artifact.created_at}`,
+        feedback ? `feedback=${feedback}` : "feedback=",
+      ].join("\n");
+      const { error } = await supabase.from("generated_artifacts").insert({
+        application_id: id,
+        user_id: user.id,
+        type: "cover_letter",
+        content: trimmed,
+        prompt_used: promptUsed,
+        generator_version: "user-edit.1",
+      });
+      if (error) {
+        toast.error(error.message || "Could not save edited version");
+        return;
+      }
+      await supabase.from("application_events").insert({
+        application_id: id,
+        user_id: user.id,
+        event_type: "document_generated",
+        description: "Cover letter edited and saved as new version",
+        metadata: feedback ? { feedback } : null,
+      });
+      toast.success("Edited cover letter saved as a new version.");
+      cancelEditingArtifact();
+      fetchData();
+    } finally {
+      setSavingEditedArtifact(false);
+    }
+  };
+
   if (loading) return <AppLayout><div className="text-muted-foreground py-12 text-center">Loading...</div></AppLayout>;
   if (!app) return <AppLayout><div className="text-muted-foreground py-12 text-center">Application not found</div></AppLayout>;
 
-  const linkedDocIds = new Set(linkedDocs.map((ld: any) => ld.document_id));
+  const linkedDocIds = new Set(linkedDocs.map((ld) => ld.document_id));
   const availableDocs = allDocs.filter(d => !linkedDocIds.has(d.id));
 
   return (
@@ -440,9 +631,14 @@ export default function ApplicationDetail() {
       </AlertDialog>
 
       <div className="space-y-6 animate-fade-in">
-        <Link to="/dashboard" className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
-          <ArrowLeft className="h-4 w-4" />Back to Dashboard
-        </Link>
+        <button
+          type="button"
+          onClick={() => navigate(backHref)}
+          className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors bg-transparent p-0 border-0"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          {backLabel}
+        </button>
 
         <div className="flex items-start justify-between">
           <div>
@@ -452,8 +648,11 @@ export default function ApplicationDetail() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <Badge className={`${statusColors[app.application_status]} text-sm px-3 py-1`} variant="secondary">
-              {statusLabels[app.application_status] || app.application_status}
+            <Badge className={`${submissionStatusColors[app.submission_status]} text-sm px-3 py-1`} variant="secondary">
+              {submissionStatusLabels[app.submission_status] || app.submission_status}
+            </Badge>
+            <Badge className={`${stageColors[app.application_status]} text-sm px-3 py-1`} variant="secondary">
+              {stageLabels[app.application_status] || app.application_status}
             </Badge>
             {app.outcome && (
               <Badge className={`${outcomeColors[app.outcome]} text-sm px-3 py-1`} variant="secondary">
@@ -462,6 +661,21 @@ export default function ApplicationDetail() {
             )}
           </div>
         </div>
+
+        {app.automation_queue_state === "waiting_for_review" && app.submission_status !== "submitted" && (
+          <Alert className="border-primary/30 bg-primary/5">
+            <AlertTitle>Review JobBot autofill</AlertTitle>
+            <AlertDescription className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <span className="text-sm">
+                Confirm resumes, cover letters, and field mappings look correct before marking this application ready to
+                submit.
+              </span>
+              <Button type="button" size="sm" onClick={() => void markReadyToSubmitAfterReview()} disabled={markReadyBusy}>
+                {markReadyBusy ? "Saving…" : "Mark ready to submit"}
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
@@ -544,7 +758,7 @@ export default function ApplicationDetail() {
               <CardContent className="space-y-4">
                 {linkedDocs.length > 0 && (
                   <div className="space-y-2">
-                    {linkedDocs.map((ld: any) => (
+                    {linkedDocs.map((ld) => (
                       <div key={ld.id} className="flex flex-col gap-2 py-2 px-3 bg-muted/50 rounded-md">
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-2 min-w-0">
@@ -687,11 +901,9 @@ export default function ApplicationDetail() {
                     {artifacts.map((a) => {
                       const expanded = !!artifactExpanded[a.id];
                       const submittedCoverDoc = allDocs.find(
-                        (d: { id: string }) =>
+                        (d) =>
                           String(d.id) === String(app.submitted_cover_document_id ?? ""),
-                      ) as
-                        | { source_generated_artifact_id?: string | null }
-                        | undefined;
+                      );
                       const coverLetterSubmitted =
                         a.type === "cover_letter" &&
                         String(submittedCoverDoc?.source_generated_artifact_id ?? "") === String(a.id);
@@ -760,6 +972,54 @@ export default function ApplicationDetail() {
                               >
                                 Used this cover letter when I applied (saves to Document Vault if not already there)
                               </Label>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="ml-auto"
+                                onClick={() => startEditingArtifact(a)}
+                              >
+                                Edit & Save New Version
+                              </Button>
+                            </div>
+                          ) : null}
+                          {a.type === "cover_letter" && editingArtifactId === a.id ? (
+                            <div className="mt-3 border-t border-border pt-3 space-y-3">
+                              <div>
+                                <Label htmlFor={`edit-cover-content-${a.id}`} className="text-xs text-muted-foreground">
+                                  Edit cover letter text
+                                </Label>
+                                <Textarea
+                                  id={`edit-cover-content-${a.id}`}
+                                  className="mt-1 min-h-[180px]"
+                                  value={editContent}
+                                  onChange={(e) => setEditContent(e.target.value)}
+                                />
+                              </div>
+                              <div>
+                                <Label htmlFor={`edit-cover-feedback-${a.id}`} className="text-xs text-muted-foreground">
+                                  Feedback points for future generations (wording, structure, tone)
+                                </Label>
+                                <Textarea
+                                  id={`edit-cover-feedback-${a.id}`}
+                                  className="mt-1 min-h-[84px]"
+                                  placeholder="Example: Keep intro shorter, stronger action verbs, and tighter 3-paragraph structure."
+                                  value={editFeedback}
+                                  onChange={(e) => setEditFeedback(e.target.value)}
+                                />
+                              </div>
+                              <div className="flex justify-end gap-2">
+                                <Button type="button" variant="ghost" onClick={cancelEditingArtifact} disabled={savingEditedArtifact}>
+                                  Cancel
+                                </Button>
+                                <Button
+                                  type="button"
+                                  onClick={() => saveEditedCoverLetterVersion(a)}
+                                  disabled={savingEditedArtifact}
+                                >
+                                  {savingEditedArtifact ? "Saving..." : "Save New Version"}
+                                </Button>
+                              </div>
                             </div>
                           ) : null}
                         </div>
@@ -774,15 +1034,26 @@ export default function ApplicationDetail() {
           {/* Sidebar */}
           <div className="space-y-6">
             <Card>
-              <CardHeader><CardTitle>Application Status</CardTitle></CardHeader>
+              <CardHeader><CardTitle>Application Tracking</CardTitle></CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <label className="text-sm text-muted-foreground">Status</label>
-                  <Select value={app.application_status} onValueChange={updateStatus}>
+                  <label className="text-sm text-muted-foreground">Submission Status</label>
+                  <Select value={app.submission_status} onValueChange={updateSubmissionStatus}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      {applicationStatuses.map(s => (
-                        <SelectItem key={s} value={s}>{statusLabels[s]}</SelectItem>
+                      {submissionStatuses.map(s => (
+                        <SelectItem key={s} value={s}>{submissionStatusLabels[s]}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm text-muted-foreground">Application Stage</label>
+                  <Select value={(app.application_status === "draft" || app.application_status === "applied") ? "not_started" : app.application_status} onValueChange={updateStage}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {applicationStages.map(s => (
+                        <SelectItem key={s} value={s}>{stageLabels[s]}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>

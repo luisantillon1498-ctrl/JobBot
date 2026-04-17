@@ -3,49 +3,26 @@ import type { BlockerKind } from "../types";
 
 export type BlockerResult = { blocked: true; kind: BlockerKind; detail: string } | { blocked: false };
 
-const CAPTCHA_PATTERNS = [/recaptcha/i, /hcaptcha/i, /captcha/i, /turnstile/i];
 const LOGIN_PATH_HINTS = [/\/sign[_-]?in/i, /\/login/i, /\/session/i, /\/auth\//i];
+const TWO_FACTOR_PATTERNS = [/two[-\s]?factor/i, /\b2fa\b/i, /\bone[-\s]?time code\b/i, /\bverification code\b/i];
+const MULTI_STEP_PATTERNS = [
+  /\bstep\s+\d+\s+of\s+\d+\b/i,
+  /\bnext step\b/i,
+  /\bcontinue application\b/i,
+  /\bprogress\b/i,
+];
 
 function pageTextBlob(page: Page): Promise<string> {
   return page.evaluate(() => document.body?.innerText?.slice(0, 80_000) ?? "");
 }
 
-async function hasCaptchaFrame(page: Page): Promise<boolean> {
-  for (const frame of page.frames()) {
-    const u = frame.url();
-    if (CAPTCHA_PATTERNS.some((p) => p.test(u))) return true;
-  }
-  return false;
-}
-
-async function hasCaptchaDom(page: Page): Promise<boolean> {
-  const hit = await page.evaluate(() => {
-    const sel = [
-      "iframe[src*='recaptcha']",
-      "iframe[src*='hcaptcha']",
-      "iframe[title*='reCAPTCHA']",
-      "[data-sitekey]",
-      ".g-recaptcha",
-      "#cf-turnstile",
-    ].join(",");
-    return !!document.querySelector(sel);
-  });
-  return hit;
-}
-
 /**
  * Heuristic detection for flows we should not drive automatically.
+ * Captcha / human verification is handled separately via human-in-the-loop (see `detectHumanChallenge`).
  */
 export async function detectBlockers(page: Page): Promise<BlockerResult> {
   const url = page.url();
-
-  if ((await hasCaptchaFrame(page)) || (await hasCaptchaDom(page))) {
-    return {
-      blocked: true,
-      kind: "captcha",
-      detail: "Captcha or bot challenge present on the page or in a frame.",
-    };
-  }
+  const text = (await pageTextBlob(page)).toLowerCase();
 
   for (const hint of LOGIN_PATH_HINTS) {
     if (hint.test(url)) {
@@ -57,7 +34,22 @@ export async function detectBlockers(page: Page): Promise<BlockerResult> {
     }
   }
 
-  const text = (await pageTextBlob(page)).toLowerCase();
+  if (TWO_FACTOR_PATTERNS.some((p) => p.test(text) || p.test(url))) {
+    return {
+      blocked: true,
+      kind: "two_factor",
+      detail: "Two-factor or verification-code challenge detected.",
+    };
+  }
+
+  if (MULTI_STEP_PATTERNS.some((p) => p.test(text))) {
+    return {
+      blocked: true,
+      kind: "multi_step_flow",
+      detail: "Unusual or multi-step application flow detected; requires manual takeover.",
+    };
+  }
+
   const loginHeavy =
     /\bpassword\b/.test(text) && (/\bsign in\b/.test(text) || /\blog in\b/.test(text));
 

@@ -1,4 +1,42 @@
 {
   "version": 1,
-  "entries": []
+  "entries": [
+    {
+      "id": "project-work-log",
+      "title": "Project Work Log",
+      "path": "entries/project-work-log.md",
+      "updatedAt": "2026-04-15T17:30:00Z",
+      "tags": [
+        "project",
+        "log",
+        "handoff",
+        "status"
+      ]
+    },
+    {
+      "id": "jobbot-non-negotiables",
+      "title": "JobBot non-negotiables",
+      "path": "entries/jobbot-non-negotiables.md",
+      "updatedAt": "2026-04-14T00:00:00Z",
+      "tags": [
+        "jobbot",
+        "constraints",
+        "safety",
+        "workflow"
+      ]
+    },
+    {
+      "id": "application-run-outcome-logging",
+      "title": "Application run outcome logging",
+      "path": "entries/application-run-outcome-logging.md",
+      "updatedAt": "2026-04-15T05:00:00Z",
+      "tags": [
+        "jobbot",
+        "automation",
+        "queue-state",
+        "audit",
+        "artifacts"
+      ]
+    }
+  ]
 }

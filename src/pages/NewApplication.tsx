@@ -150,6 +150,8 @@ export default function NewApplication() {
         .from("applications")
         .insert({
           user_id: user.id,
+          submission_status: "draft",
+          application_status: "not_started",
           job_url: row.job_url,
           company_name: row.company_name.trim(),
           job_title: row.job_title.trim(),
@@ -170,7 +172,7 @@ export default function NewApplication() {
         application_id: data.id,
         user_id: user.id,
         event_type: "status_change",
-        description: "Application created as draft",
+        description: "Application created as draft (submission status)",
       });
 
       toast.success("Application created");
