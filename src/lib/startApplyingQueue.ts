@@ -147,10 +147,6 @@ export async function startApplyingQueue(options: StartApplyingQueueOptions = {}
     throw new Error("Missing Supabase URL or anon/publishable key for Edge Functions.");
   }
 
-  const { error: userError } = await supabase.auth.getUser();
-  if (userError) {
-    throw new Error("Your session has expired. Please sign in again.");
-  }
   const { data: sessionData } = await supabase.auth.getSession();
   const accessToken = sessionData.session?.access_token;
   if (!accessToken) {
