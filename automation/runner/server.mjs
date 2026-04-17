@@ -189,6 +189,7 @@ async function runAutomation(payload) {
 
   const cleanupPaths = [];
   let steelSession = null;
+  let keepSteelAlive = false;
   try {
     steelSession = await createSteelSession(RUN_TIMEOUT_MS);
 
@@ -273,6 +274,7 @@ async function runAutomation(payload) {
     if (steelSession && result.status === "waiting_for_human_action") {
       result.steel_live_url = steelSession.liveViewUrl;
       result.steel_session_id = steelSession.sessionId;
+      keepSteelAlive = true; // don't release — user needs the browser for the live session
     }
     const unansweredQuestions = deriveUnansweredQuestions(runPayload);
     if (unansweredQuestions.length > 0) {
@@ -325,7 +327,11 @@ async function runAutomation(payload) {
       body: runnerBody,
     };
   } finally {
-    await releaseSteelSession(steelSession?.sessionId);
+    if (!keepSteelAlive) {
+      await releaseSteelSession(steelSession?.sessionId);
+    } else {
+      console.log(`[steel] Keeping session alive for human action: ${steelSession?.sessionId}`);
+    }
     for (const filePath of cleanupPaths) {
       await fs.rm(filePath, { force: true }).catch(() => {});
     }

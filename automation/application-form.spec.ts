@@ -112,22 +112,26 @@ test.describe("Application form automation", () => {
         });
         await outcomeLogger.syncSessionArtifacts(paths);
 
-        if (!headed && !hasSteelSession()) {
+        // In headless mode (production runner), exit immediately and surface the Steel live URL.
+        // The Steel session stays alive so the user can solve the challenge in the iframe.
+        // In headed mode (local dev), pause so the developer can interact directly.
+        if (!headed) {
           status = { kind: "waiting_for_human_action", detail: human.detail };
           await writeMeta(paths, { jobUrl: url, site, status, finalUrl: activePage.url() });
           await writeJson(paths.payloadPath, {
             payload,
             fillReport: null,
-            note: "human_verification_requires_headed_browser",
+            note: hasSteelSession() ? "human_verification_steel_live_session" : "human_verification_requires_headed_browser",
             filesUploaded: [],
             readyForUserReview: false,
           });
           await outcomeLogger.appendLocalAndSession(paths, "human_handoff_headless_exit");
           await outcomeLogger.logLifecycle({
             phase: "run_suspended_headless",
-            description:
-              "Run suspended: human verification requires a headed browser; queue remains waiting for human action (not a failure)",
-            context: { detail: human.detail },
+            description: hasSteelSession()
+              ? "Run suspended: human verification required — Steel live session active for manual solve"
+              : "Run suspended: human verification requires a headed browser; queue remains waiting for human action (not a failure)",
+            context: { detail: human.detail, steel: hasSteelSession() },
             paths,
             finalUrl: activePage.url(),
           });
@@ -135,10 +139,9 @@ test.describe("Application form automation", () => {
           return;
         }
 
+        // Headed (local dev only): pause so developer can interact.
         await outcomeLogger.appendLocalAndSession(paths, "human_handoff_browser_active");
-        if (headed) {
-          await activePage.pause();
-        }
+        await activePage.pause();
         const cleared = await waitUntilHumanChallengeCleared(activePage, {
           timeoutMs: humanChallengeTimeoutMs(),
           signalFile: humanActionDoneSignalPath(),
