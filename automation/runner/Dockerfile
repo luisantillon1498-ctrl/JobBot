@@ -12,4 +12,4 @@ ENV PORT=8080
 
 EXPOSE 8080
 
-CMD ["npm", "run", "runner:start"]
+CMD ["node", "automation/runner/server.mjs"]
