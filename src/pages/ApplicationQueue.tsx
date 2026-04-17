@@ -472,30 +472,32 @@ export default function ApplicationQueue() {
                             <TableCell className="text-muted-foreground">{row.selected_resume_label}</TableCell>
                             <TableCell className="text-muted-foreground">{row.selected_cover_label}</TableCell>
                           </TableRow>
-                          {row.automation_queue_state === "waiting_for_human_action" && row.automation_live_url && (
+                          {row.automation_queue_state === "waiting_for_human_action" && (
                             <TableRow key={`${row.id}-live`}>
                               <TableCell colSpan={5} className="p-0">
-                                <div className="mt-4 space-y-3 px-4 pb-4">
+                                <div className="mt-2 space-y-3 px-4 pb-4">
                                   <Alert variant="default" className="border-amber-500/50 bg-amber-500/5 py-2">
-                                    <AlertDescription className="text-xs text-muted-foreground space-y-1">
+                                    <AlertDescription className="text-sm space-y-1">
                                       <p>{summarizeHandoff([row])}</p>
                                       {row.automation_last_error && (
                                         <p className="text-xs text-muted-foreground">Detail: {row.automation_last_error}</p>
                                       )}
                                     </AlertDescription>
                                   </Alert>
-                                  <div className="rounded-lg overflow-hidden border border-amber-500/40">
-                                    <div className="px-3 py-2 bg-amber-500/10 flex items-center justify-between">
-                                      <p className="text-sm text-muted-foreground">
-                                        Complete the verification below, then click <strong>Resume Automation</strong> when done.
-                                      </p>
-                                    </div>
-                                    <iframe
-                                      src={row.automation_live_url}
-                                      className="w-full h-[600px]"
-                                      allow="clipboard-read; clipboard-write"
-                                      title="Live browser session — complete verification"
-                                    />
+                                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-4 py-3 space-y-2">
+                                    <p className="text-sm text-muted-foreground">
+                                      Open the job page in your browser, complete the verification, then click <strong>Resume Automation</strong>.
+                                    </p>
+                                    {row.job_url && (
+                                      <a
+                                        href={row.job_url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="inline-flex items-center gap-1.5 text-sm font-medium text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:text-amber-600"
+                                      >
+                                        Open job page ↗
+                                      </a>
+                                    )}
                                   </div>
                                   <Button
                                     onClick={() => void handleResume(row.id)}
