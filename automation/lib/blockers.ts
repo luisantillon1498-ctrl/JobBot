@@ -5,11 +5,25 @@ export type BlockerResult = { blocked: true; kind: BlockerKind; detail: string }
 
 const LOGIN_PATH_HINTS = [/\/sign[_-]?in/i, /\/login/i, /\/session/i, /\/auth\//i];
 const TWO_FACTOR_PATTERNS = [/two[-\s]?factor/i, /\b2fa\b/i, /\bone[-\s]?time code\b/i, /\bverification code\b/i];
+
+// Known ATS domains where multi-step flows are expected and should NOT be blocked.
+const KNOWN_ATS_HOSTS = [
+  "greenhouse.io",
+  "boards.greenhouse.io",
+  "ashbyhq.com",
+  "jobs.ashbyhq.com",
+  "myworkdayjobs.com",
+  "workday.com",
+  "lever.co",
+  "jobs.lever.co",
+];
+
+// Only flag as multi-step if we see flows that are genuinely non-ATS gating patterns.
+// Deliberately excludes "progress", "next step", "continue application" — all normal in ATS forms.
 const MULTI_STEP_PATTERNS = [
-  /\bstep\s+\d+\s+of\s+\d+\b/i,
-  /\bnext step\b/i,
-  /\bcontinue application\b/i,
-  /\bprogress\b/i,
+  /\bcreate an account to apply\b/i,
+  /\bsign up to continue\b/i,
+  /\byou must (log in|sign in|register) (before|to) appl/i,
 ];
 
 function pageTextBlob(page: Page): Promise<string> {
@@ -20,17 +34,30 @@ function pageTextBlob(page: Page): Promise<string> {
  * Heuristic detection for flows we should not drive automatically.
  * Captcha / human verification is handled separately via human-in-the-loop (see `detectHumanChallenge`).
  */
+function isKnownAtsHost(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, "");
+    return KNOWN_ATS_HOSTS.some((ats) => host === ats || host.endsWith(`.${ats}`));
+  } catch {
+    return false;
+  }
+}
+
 export async function detectBlockers(page: Page): Promise<BlockerResult> {
   const url = page.url();
   const text = (await pageTextBlob(page)).toLowerCase();
+  const knownAts = isKnownAtsHost(url);
 
-  for (const hint of LOGIN_PATH_HINTS) {
-    if (hint.test(url)) {
-      return {
-        blocked: true,
-        kind: "login",
-        detail: `URL suggests an auth wall: ${url}`,
-      };
+  // Skip login-path check on known ATS hosts — their auth paths are part of the apply flow.
+  if (!knownAts) {
+    for (const hint of LOGIN_PATH_HINTS) {
+      if (hint.test(url)) {
+        return {
+          blocked: true,
+          kind: "login",
+          detail: `URL suggests an auth wall: ${url}`,
+        };
+      }
     }
   }
 
@@ -42,7 +69,8 @@ export async function detectBlockers(page: Page): Promise<BlockerResult> {
     };
   }
 
-  if (MULTI_STEP_PATTERNS.some((p) => p.test(text))) {
+  // Skip multi-step check entirely for known ATS hosts — step indicators are expected.
+  if (!knownAts && MULTI_STEP_PATTERNS.some((p) => p.test(text))) {
     return {
       blocked: true,
       kind: "multi_step_flow",
