@@ -1,15 +1,47 @@
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import net from "node:net";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const RUNNER_TOKEN = process.env.JOBPAL_AUTOMATION_RUNNER_TOKEN?.trim() || "";
 const ROOT_DIR = path.resolve(process.cwd());
-const RUN_TIMEOUT_MS = Number(process.env.JOBPAL_RUN_TIMEOUT_MS ?? 180000);
-const STEEL_API_KEY = process.env.STEEL_API_KEY?.trim() || "";
+// Long timeout to accommodate CAPTCHA solve time
+const RUN_TIMEOUT_MS = Number(process.env.JOBPAL_RUN_TIMEOUT_MS ?? 1_800_000);
+
+// Supabase REST — used to write final state after a fire-and-forget /resume
+const SUPABASE_URL = (process.env.SUPABASE_URL ?? "").replace(/\/$/, "");
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ?? "";
+
+// websockify listens on this port (bridges WebSocket → VNC :5900)
+const VNC_WS_PORT = 6080;
+// noVNC static files (installed by `apt-get install novnc`)
+const NOVNC_STATIC = "/usr/share/novnc";
+
+const MIME = {
+  ".html": "text/html; charset=utf-8",
+  ".js":   "application/javascript",
+  ".css":  "text/css",
+  ".png":  "image/png",
+  ".svg":  "image/svg+xml",
+  ".ico":  "image/x-icon",
+  ".wasm": "application/wasm",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+};
+
+/**
+ * Active CAPTCHA handoff sessions keyed by application_id.
+ * Stored so that POST /resume can signal them without restarting Playwright.
+ */
+const activeSessions = new Map();
+// Map<appId, { proc, doneFile, exitPromise, tempDir, outputDir, cleanupPaths, runId }>
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function sendJson(res, status, body) {
   res.writeHead(status, { "Content-Type": "application/json" });
@@ -40,88 +72,148 @@ function toSafeFileName(input, fallback) {
 
 async function downloadToFile(url, filePath) {
   const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Document download failed (${response.status})`);
-  }
+  if (!response.ok) throw new Error(`Document download failed (${response.status})`);
   const bytes = Buffer.from(await response.arrayBuffer());
   await fs.writeFile(filePath, bytes);
 }
 
-async function createSteelSession(timeoutMs) {
-  console.log(`[steel] STEEL_API_KEY set: ${Boolean(STEEL_API_KEY)}`);
-  if (!STEEL_API_KEY) return null;
-  console.log(`[steel] Creating session with timeout ${timeoutMs}ms`);
-  const res = await fetch("https://api.steel.dev/v1/sessions", {
-    method: "POST",
-    headers: { "Steel-Api-Key": STEEL_API_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify({ timeout: timeoutMs }),
-  });
-  if (!res.ok) {
-    console.error(`[steel] Session create failed: ${res.status}`);
-    return null;
-  }
-  const data = await res.json();
-  // Always construct CDP URL with apiKey + sessionId — Steel's websocketUrl omits the apiKey header auth.
-  const cdpUrl = `wss://connect.steel.dev?apiKey=${encodeURIComponent(STEEL_API_KEY)}&sessionId=${encodeURIComponent(data.id)}`;
-  console.log(`[steel] Session created: ${data.id}, cdpUrl: ${cdpUrl}, liveViewUrl: ${data.sessionViewerUrl}`);
-  return { sessionId: data.id, cdpUrl, liveViewUrl: data.sessionViewerUrl };
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
-async function releaseSteelSession(sessionId) {
-  if (!STEEL_API_KEY || !sessionId) return;
-  try {
-    await fetch(`https://api.steel.dev/v1/sessions/${sessionId}/release`, {
-      method: "POST",
-      headers: { "Steel-Api-Key": STEEL_API_KEY },
-    });
-  } catch (err) {
-    console.error("Steel session release failed:", err);
+async function waitForFile(filePath, timeoutMs, pollMs = 1000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await fs.access(filePath);
+      return true;
+    } catch {
+      await sleep(pollMs);
+    }
   }
+  return false;
 }
 
-function runPlaywright(env) {
+function getRunnerPublicUrl() {
+  // RAILWAY_PUBLIC_DOMAIN is injected automatically by Railway (e.g. "foo.up.railway.app").
+  // Fall back to JOBPAL_AUTOMATION_RUNNER_URL for local dev or non-Railway deployments.
+  const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN?.trim();
+  if (railwayDomain) return `https://${railwayDomain}`;
+  const explicit = (process.env.JOBPAL_AUTOMATION_RUNNER_URL ?? "").trim();
+  return explicit.replace(/\/run\/?$/, "").replace(/\/$/, "");
+}
+
+function buildVncUrl() {
+  const base = getRunnerPublicUrl();
+  // noVNC will connect to wss://<same host>/vnc-ws automatically because
+  // path=vnc-ws is a relative WebSocket path from the page origin.
+  return `${base}/vnc/vnc.html?path=vnc-ws&autoconnect=1&resize=scale`;
+}
+
+// ─── Xvfb / VNC startup ──────────────────────────────────────────────────────
+
+function startXvfb() {
   return new Promise((resolve, reject) => {
-    const proc = spawn("npx playwright test automation/application-form.spec.ts --config automation/playwright.config.ts", {
+    console.log("[xvfb] Starting Xvfb :99 ...");
+    const proc = spawn("Xvfb", [":99", "-screen", "0", "1280x900x24", "-ac"], {
+      stdio: "pipe",
+      detached: false,
+    });
+    proc.stderr.on("data", (d) => console.error("[xvfb]", d.toString().trimEnd()));
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code !== null) console.error(`[xvfb] exited with code ${code}`);
+    });
+    // Give Xvfb 1.5 s to initialise
+    setTimeout(() => {
+      console.log("[xvfb] Ready");
+      resolve(proc);
+    }, 1500);
+  });
+}
+
+function startX11vnc() {
+  console.log("[x11vnc] Starting on :5900 ...");
+  const proc = spawn(
+    "x11vnc",
+    ["-display", ":99", "-nopw", "-listen", "localhost", "-xkb", "-forever", "-shared", "-quiet", "-rfbport", "5900"],
+    { stdio: "pipe", detached: false },
+  );
+  proc.stderr.on("data", (d) => console.error("[x11vnc]", d.toString().trimEnd()));
+  proc.on("error", (e) => console.error("[x11vnc] error:", e.message));
+  proc.on("close", (code) => {
+    if (code !== null) console.error(`[x11vnc] exited with code ${code}`);
+  });
+  console.log("[x11vnc] Launched");
+  return proc;
+}
+
+function startWebsockify() {
+  console.log("[websockify] Starting :6080 → localhost:5900 ...");
+  // No --web flag: we serve noVNC static files ourselves (allows Node to serve on 8080)
+  const proc = spawn("websockify", ["6080", "localhost:5900"], {
+    stdio: "pipe",
+    detached: false,
+  });
+  proc.stdout.on("data", (d) => console.log("[websockify]", d.toString().trimEnd()));
+  proc.stderr.on("data", (d) => console.error("[websockify]", d.toString().trimEnd()));
+  proc.on("error", (e) => console.error("[websockify] error:", e.message));
+  proc.on("close", (code) => {
+    if (code !== null) console.error(`[websockify] exited with code ${code}`);
+  });
+  console.log("[websockify] Launched");
+  return proc;
+}
+
+// ─── Playwright spawning ──────────────────────────────────────────────────────
+
+function spawnPlaywright(env) {
+  return spawn(
+    "npx",
+    ["playwright", "test", "automation/application-form.spec.ts", "--config", "automation/playwright.config.ts"],
+    {
       cwd: ROOT_DIR,
       env: { ...process.env, ...env },
       stdio: "pipe",
-      shell: true,
-    });
+      shell: false,
+    },
+  );
+}
 
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      proc.kill("SIGTERM");
-    }, RUN_TIMEOUT_MS);
-
+// Returns a Promise that resolves to { code, stdout, stderr } when proc exits.
+// Also starts streaming logs immediately.
+function trackProc(proc) {
+  let stdout = "";
+  let stderr = "";
+  const exitPromise = new Promise((resolve) => {
     proc.stdout.on("data", (d) => {
-      const chunk = d.toString();
-      stdout += chunk;
-      console.log("[pw]", chunk.trimEnd());
+      const s = d.toString();
+      stdout += s;
+      console.log("[pw]", s.trimEnd());
     });
     proc.stderr.on("data", (d) => {
-      const chunk = d.toString();
-      stderr += chunk;
-      console.error("[pw:err]", chunk.trimEnd());
+      const s = d.toString();
+      stderr += s;
+      console.error("[pw:err]", s.trimEnd());
     });
-    proc.on("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
+    proc.on("error", (err) => {
+      console.error("[pw] spawn error:", err.message);
+      resolve({ code: 1, stdout, stderr });
     });
-    proc.on("close", (code) => {
-      clearTimeout(timeout);
-      resolve({ code: code ?? 1, stdout, stderr, timedOut });
-    });
+    proc.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
   });
+  // Expose getter so callers can read partial output
+  exitPromise._getStdout = () => stdout;
+  exitPromise._getStderr = () => stderr;
+  return exitPromise;
 }
+
+// ─── Artifact helpers ─────────────────────────────────────────────────────────
 
 function mapMetaStatusToRunnerResult(metaStatus) {
   if (!metaStatus || typeof metaStatus !== "object") {
     return { status: "failed", hard_blocker: false, message: "Missing run meta status" };
   }
-
   if (metaStatus.kind === "waiting_for_human_action") {
     return {
       status: "waiting_for_human_action",
@@ -130,27 +222,13 @@ function mapMetaStatusToRunnerResult(metaStatus) {
       unanswered_questions: [],
     };
   }
-
   if (metaStatus.kind === "blocked") {
-    return {
-      status: "blocked",
-      hard_blocker: false,
-      message: metaStatus.detail || "Run blocked",
-      unanswered_questions: [],
-    };
+    return { status: "blocked", hard_blocker: false, message: metaStatus.detail || "Run blocked", unanswered_questions: [] };
   }
   if (metaStatus.kind === "filled") {
-    return {
-      status: "waiting_for_review",
-      hard_blocker: false,
-      message: metaStatus.message || "Run completed and paused before submit",
-    };
+    return { status: "waiting_for_review", hard_blocker: false, message: metaStatus.message || "Run completed and paused before submit" };
   }
-  return {
-    status: "failed",
-    hard_blocker: false,
-    message: metaStatus.message || "Run failed",
-  };
+  return { status: "failed", hard_blocker: false, message: metaStatus.message || "Run failed" };
 }
 
 function pickSkippedReason(output) {
@@ -166,7 +244,6 @@ function pickSkippedReason(output) {
 function deriveUnansweredQuestions(runPayload) {
   const issues = runPayload?.fillReport?.mappingPlan?.issues;
   if (!Array.isArray(issues)) return [];
-
   return issues
     .filter((issue) => {
       if (!issue || typeof issue !== "object") return false;
@@ -181,173 +258,376 @@ function deriveUnansweredQuestions(runPayload) {
     }));
 }
 
+async function readArtifacts(outputDir, runId, procResult) {
+  const runEntries = await fs.readdir(outputDir, { withFileTypes: true }).catch(() => []);
+  const runDirs = runEntries.filter((d) => d.isDirectory()).map((d) => path.join(outputDir, d.name));
+
+  if (runDirs.length === 0) {
+    return {
+      httpStatus: 500,
+      body: {
+        status: "failed",
+        hard_blocker: false,
+        error: "No artifact output produced by automation run",
+        message: procResult.stderr || procResult.stdout || "Automation exited without artifacts",
+      },
+    };
+  }
+
+  runDirs.sort();
+  const latestRunDir = runDirs[runDirs.length - 1];
+  const metaPath = path.join(latestRunDir, "meta.json");
+  const payloadPath = path.join(latestRunDir, "payload.json");
+  const runLogPath = path.join(latestRunDir, "run.log");
+  const fieldMappingsPath = path.join(latestRunDir, "field-mappings.json");
+  const humanHandoffPath = path.join(latestRunDir, "human-handoff.json");
+
+  let meta, runPayload;
+  try {
+    meta = JSON.parse(await fs.readFile(metaPath, "utf8"));
+    runPayload = JSON.parse(await fs.readFile(payloadPath, "utf8").catch(() => "{}"));
+  } catch {
+    return { httpStatus: 500, body: { status: "failed", hard_blocker: false, error: "Could not parse run artifacts" } };
+  }
+
+  const result = mapMetaStatusToRunnerResult(meta.status);
+  const unansweredQuestions = deriveUnansweredQuestions(runPayload);
+  if (unansweredQuestions.length > 0) {
+    result.status = "blocked";
+    result.message = "Eligibility/work-authorization question requires manual review";
+    result.unanswered_questions = unansweredQuestions;
+  }
+
+  const runnerBody = {
+    ...result,
+    final_url: meta.finalUrl ?? null,
+    artifacts: {
+      run_id: runId,
+      run_dir: latestRunDir,
+      meta_path: metaPath,
+      payload_path: payloadPath,
+      run_log_path: runLogPath,
+      field_mappings_path: fieldMappingsPath,
+      human_handoff_path: humanHandoffPath,
+      files_uploaded: runPayload?.filesUploaded ?? [],
+    },
+  };
+
+  const inlineSkipReason =
+    typeof runnerBody.message === "string" && runnerBody.message.startsWith("Test is skipped:")
+      ? runnerBody.message.replace(/^Test is skipped:\s*/, "").trim()
+      : null;
+  const skipReason = inlineSkipReason || pickSkippedReason(`${procResult.stdout}\n${procResult.stderr}`);
+  if (skipReason && (runnerBody.status === "failed" || runnerBody.status === "waiting_for_review")) {
+    runnerBody.status = "blocked";
+    runnerBody.hard_blocker = false;
+    runnerBody.message = skipReason;
+  }
+
+  if (procResult.code !== 0 && runnerBody.status === "waiting_for_review") {
+    return {
+      httpStatus: 500,
+      body: {
+        status: "failed",
+        hard_blocker: false,
+        error: "Automation process exited non-zero",
+        message: procResult.stderr || procResult.stdout || "Playwright process failed",
+        final_url: runnerBody.final_url,
+        artifacts: runnerBody.artifacts,
+      },
+    };
+  }
+
+  return { httpStatus: runnerBody.status === "failed" ? 500 : 200, body: runnerBody };
+}
+
+// ─── Main automation runner ───────────────────────────────────────────────────
+
 async function runAutomation(payload) {
+  const appId = String(payload?.application_id ?? "");
   const runId = randomUUID();
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "jobpal-runner-"));
   const outputDir = path.join(tempDir, "output");
   await fs.mkdir(outputDir, { recursive: true });
 
   const cleanupPaths = [];
-  let steelSession = null;
-  let keepSteelAlive = false;
+
+  const resumeSignedUrl = payload?.documents?.resume?.signed_url || null;
+  const coverSignedUrl = payload?.documents?.cover_letter?.signed_url || null;
+  let resumePath = "";
+  let coverPath = "";
+
+  if (resumeSignedUrl) {
+    resumePath = path.join(tempDir, toSafeFileName(payload?.documents?.resume?.name, "resume.bin"));
+    await downloadToFile(resumeSignedUrl, resumePath);
+    cleanupPaths.push(resumePath);
+  }
+  if (coverSignedUrl) {
+    coverPath = path.join(tempDir, toSafeFileName(payload?.documents?.cover_letter?.name, "cover-letter.bin"));
+    await downloadToFile(coverSignedUrl, coverPath);
+    cleanupPaths.push(coverPath);
+  }
+
+  // Signal files for CAPTCHA handoff
+  const pausedFile = path.join(tempDir, "paused.signal");
+  const doneFile = path.join(tempDir, "done.signal");
+
+  const env = {
+    JOBPAL_OUTPUT_DIR: outputDir,
+    JOBPAL_APPLICATION_ID: appId,
+    JOBPAL_USER_ID: String(payload?.user_id ?? ""),
+    JOBPAL_JOB_URL: String(payload?.job_url ?? ""),
+    JOBPAL_FIRST_NAME: String(payload?.applicant?.first_name ?? ""),
+    JOBPAL_MIDDLE_NAME: String(payload?.applicant?.middle_name ?? ""),
+    JOBPAL_LAST_NAME: String(payload?.applicant?.last_name ?? ""),
+    JOBPAL_EMAIL: String(payload?.applicant?.email ?? ""),
+    JOBPAL_PHONE: String(payload?.applicant?.phone ?? ""),
+    JOBPAL_LINKEDIN_URL: String(payload?.applicant?.linkedin_url ?? ""),
+    JOBPAL_LOCATION: String(payload?.applicant?.location ?? ""),
+    JOBPAL_WORK_AUTHORIZATION: "",
+    JOBPAL_SALARY_EXPECTATIONS: "",
+    JOBPAL_RESUME_PATH: resumePath,
+    JOBPAL_COVER_LETTER_PATH: coverPath,
+    JOBPAL_PAUSED_FILE: pausedFile,
+    JOBPAL_HUMAN_ACTION_DONE_FILE: doneFile,
+    DISPLAY: ":99",
+  };
+
+  console.log(`[runner] Starting Playwright for app ${appId}`);
+  const proc = spawnPlaywright(env);
+  const exitPromise = trackProc(proc);
+
+  // Race: Playwright exits normally OR writes the paused-file (CAPTCHA handoff)
+  let winner;
   try {
-    steelSession = await createSteelSession(RUN_TIMEOUT_MS);
-
-    const resumeSignedUrl = payload?.documents?.resume?.signed_url || null;
-    const coverSignedUrl = payload?.documents?.cover_letter?.signed_url || null;
-    let resumePath = "";
-    let coverPath = "";
-
-    if (resumeSignedUrl) {
-      resumePath = path.join(tempDir, toSafeFileName(payload?.documents?.resume?.name, "resume.bin"));
-      await downloadToFile(resumeSignedUrl, resumePath);
-      cleanupPaths.push(resumePath);
-    }
-    if (coverSignedUrl) {
-      coverPath = path.join(tempDir, toSafeFileName(payload?.documents?.cover_letter?.name, "cover-letter.bin"));
-      await downloadToFile(coverSignedUrl, coverPath);
-      cleanupPaths.push(coverPath);
-    }
-
-    const env = {
-      JOBPAL_OUTPUT_DIR: outputDir,
-      JOBPAL_APPLICATION_ID: String(payload?.application_id ?? ""),
-      JOBPAL_USER_ID: String(payload?.user_id ?? ""),
-      JOBPAL_JOB_URL: String(payload?.job_url ?? ""),
-      JOBPAL_FIRST_NAME: String(payload?.applicant?.first_name ?? ""),
-      JOBPAL_MIDDLE_NAME: String(payload?.applicant?.middle_name ?? ""),
-      JOBPAL_LAST_NAME: String(payload?.applicant?.last_name ?? ""),
-      JOBPAL_EMAIL: String(payload?.applicant?.email ?? ""),
-      JOBPAL_PHONE: String(payload?.applicant?.phone ?? ""),
-      JOBPAL_LINKEDIN_URL: String(payload?.applicant?.linkedin_url ?? ""),
-      JOBPAL_LOCATION: String(payload?.applicant?.location ?? ""),
-      JOBPAL_WORK_AUTHORIZATION: "",
-      JOBPAL_SALARY_EXPECTATIONS: "",
-      JOBPAL_RESUME_PATH: resumePath,
-      JOBPAL_COVER_LETTER_PATH: coverPath,
-    };
-
-    if (steelSession) {
-      env.JOBPAL_STEEL_CDP_URL = steelSession.cdpUrl;
-      env.JOBPAL_STEEL_SESSION_ID = steelSession.sessionId;
-      env.JOBPAL_STEEL_LIVE_URL = steelSession.liveViewUrl;
-    }
-
-    const proc = await runPlaywright(env);
-    if (proc.timedOut) {
-      return {
-        httpStatus: 504,
-        body: { status: "failed", hard_blocker: true, error: `Runner timed out after ${RUN_TIMEOUT_MS}ms` },
-      };
-    }
-
-    const runEntries = await fs.readdir(outputDir, { withFileTypes: true });
-    const runDirs = runEntries.filter((d) => d.isDirectory()).map((d) => path.join(outputDir, d.name));
-    if (runDirs.length === 0) {
-      return {
-        httpStatus: 500,
-        body: {
-          status: "failed",
-          hard_blocker: false,
-          error: "No artifact output produced by automation run",
-          message: proc.stderr || proc.stdout || "Automation exited without artifacts",
-        },
-      };
-    }
-
-    runDirs.sort();
-    const latestRunDir = runDirs[runDirs.length - 1];
-    const metaPath = path.join(latestRunDir, "meta.json");
-    const payloadPath = path.join(latestRunDir, "payload.json");
-    const runLogPath = path.join(latestRunDir, "run.log");
-    const fieldMappingsPath = path.join(latestRunDir, "field-mappings.json");
-    const humanHandoffPath = path.join(latestRunDir, "human-handoff.json");
-
-    const [metaRaw, runPayloadRaw] = await Promise.all([
-      fs.readFile(metaPath, "utf8"),
-      fs.readFile(payloadPath, "utf8").catch(() => "{}"),
+    winner = await Promise.race([
+      exitPromise.then(() => "exited"),
+      waitForFile(pausedFile, RUN_TIMEOUT_MS).then((found) => (found ? "paused" : "timeout")),
     ]);
-    const meta = JSON.parse(metaRaw);
-    const runPayload = JSON.parse(runPayloadRaw);
+  } catch (e) {
+    winner = "exited";
+  }
 
-    const result = mapMetaStatusToRunnerResult(meta.status);
-    if (steelSession && result.status === "waiting_for_human_action") {
-      result.steel_live_url = steelSession.liveViewUrl;
-      result.steel_session_id = steelSession.sessionId;
-      keepSteelAlive = true; // don't release — user needs the browser for the live session
-    }
-    const unansweredQuestions = deriveUnansweredQuestions(runPayload);
-    if (unansweredQuestions.length > 0) {
-      result.status = "blocked";
-      result.message = "Eligibility/work-authorization question requires manual review";
-      result.unanswered_questions = unansweredQuestions;
-    }
-    const runnerBody = {
-      ...result,
-      final_url: meta.finalUrl ?? null,
-      artifacts: {
-        run_id: runId,
-        run_dir: latestRunDir,
-        meta_path: metaPath,
-        payload_path: payloadPath,
-        run_log_path: runLogPath,
-        field_mappings_path: fieldMappingsPath,
-        human_handoff_path: humanHandoffPath,
-        files_uploaded: runPayload?.filesUploaded ?? [],
-      },
-    };
+  if (winner === "paused") {
+    const vncUrl = buildVncUrl();
+    console.log(`[runner] App ${appId} paused for human action. VNC: ${vncUrl}`);
 
-    const inlineSkipReason =
-      typeof runnerBody.message === "string" && runnerBody.message.startsWith("Test is skipped:")
-        ? runnerBody.message.replace(/^Test is skipped:\s*/, "").trim()
-        : null;
-    const skipReason = inlineSkipReason || pickSkippedReason(`${proc.stdout}\n${proc.stderr}`);
-    if (skipReason && (runnerBody.status === "failed" || runnerBody.status === "waiting_for_review")) {
-      runnerBody.status = "blocked";
-      runnerBody.hard_blocker = false;
-      runnerBody.message = skipReason;
-    }
+    // Store session so /resume can signal and await it
+    activeSessions.set(appId, { proc, doneFile, exitPromise, tempDir, outputDir, cleanupPaths, runId });
 
-    if (proc.code !== 0 && runnerBody.status === "waiting_for_review") {
-      return {
-        httpStatus: 500,
-        body: {
-          status: "failed",
-          hard_blocker: false,
-          error: "Automation process exited non-zero",
-          message: proc.stderr || proc.stdout || "Playwright process failed",
-          final_url: runnerBody.final_url,
-          artifacts: runnerBody.artifacts,
-        },
-      };
-    }
+    // Clean up when Playwright eventually finishes (don't await here)
+    exitPromise.then(() => {
+      activeSessions.delete(appId);
+      for (const f of cleanupPaths) fs.rm(f, { force: true }).catch(() => {});
+      fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    });
 
     return {
-      httpStatus: runnerBody.status === "failed" ? 500 : 200,
-      body: runnerBody,
+      httpStatus: 200,
+      body: { status: "waiting_for_human_action", hard_blocker: false, vnc_url: vncUrl },
     };
-  } finally {
-    if (!keepSteelAlive) {
-      await releaseSteelSession(steelSession?.sessionId);
+  }
+
+  if (winner === "timeout") {
+    proc.kill("SIGTERM");
+    for (const f of cleanupPaths) await fs.rm(f, { force: true }).catch(() => {});
+    return {
+      httpStatus: 504,
+      body: { status: "failed", hard_blocker: true, error: `Runner timed out after ${RUN_TIMEOUT_MS}ms` },
+    };
+  }
+
+  // Playwright exited on its own
+  const procResult = await exitPromise;
+  for (const f of cleanupPaths) await fs.rm(f, { force: true }).catch(() => {});
+
+  const result = await readArtifacts(outputDir, runId, procResult);
+  return result;
+}
+
+// ─── Supabase REST writer (used post-resume, out-of-band) ────────────────────
+
+async function pushToSupabase(appId, userId, runnerBody) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    console.warn("[supabase] Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY — skipping DB update after resume");
+    return;
+  }
+
+  const returnedStatus = typeof runnerBody.status === "string" ? runnerBody.status : "";
+  const queueState =
+    returnedStatus === "waiting_for_human_action" || returnedStatus === "blocked"
+      ? "waiting_for_human_action"
+      : returnedStatus === "failed"
+        ? "failed"
+        : "waiting_for_review";
+
+  const now = new Date().toISOString();
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+    apikey: SUPABASE_SERVICE_ROLE_KEY,
+    Prefer: "return=minimal",
+  };
+
+  // 1. Update applications row
+  try {
+    const patchRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/applications?id=eq.${encodeURIComponent(appId)}&user_id=eq.${encodeURIComponent(userId)}&submission_status=neq.submitted`,
+      {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({
+          automation_queue_state: queueState,
+          automation_last_run_at: now,
+          automation_last_outcome: queueState,
+          automation_last_error: runnerBody.message ?? runnerBody.error ?? null,
+          automation_last_context: {
+            queue_state: queueState,
+            failure_reason: runnerBody.message ?? runnerBody.error ?? null,
+            context: { resumed: true, queue_handoff: true, queue_run_at: now },
+          },
+          // Clear the live URL now that the session is done
+          automation_live_url: null,
+        }),
+      },
+    );
+    if (!patchRes.ok) {
+      console.error(`[supabase] PATCH applications failed: ${patchRes.status} ${await patchRes.text()}`);
     } else {
-      console.log(`[steel] Keeping session alive for human action: ${steelSession?.sessionId}`);
+      console.log(`[supabase] Updated app ${appId} → ${queueState}`);
     }
-    for (const filePath of cleanupPaths) {
-      await fs.rm(filePath, { force: true }).catch(() => {});
+  } catch (e) {
+    console.error("[supabase] PATCH applications error:", e.message);
+  }
+
+  // 2. Insert automation_status event
+  try {
+    const description =
+      queueState === "waiting_for_review"
+        ? "Autofill completed after human action; waiting for review"
+        : queueState === "waiting_for_human_action"
+          ? "Resume completed but another human action is still required"
+          : "Run failed after resume";
+    const evtRes = await fetch(`${SUPABASE_URL}/rest/v1/application_events`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        application_id: appId,
+        user_id: userId,
+        event_type: "automation_status",
+        description,
+        metadata: {
+          queue_state: queueState,
+          failure_reason: runnerBody.message ?? runnerBody.error ?? null,
+          context: { resumed: true, queue_handoff: true, queue_run_at: now },
+        },
+      }),
+    });
+    if (!evtRes.ok) {
+      console.error(`[supabase] POST application_events failed: ${evtRes.status} ${await evtRes.text()}`);
     }
+  } catch (e) {
+    console.error("[supabase] POST application_events error:", e.message);
   }
 }
 
-const server = createServer(async (req, res) => {
-  if (req.method === "GET" && req.url === "/healthz") {
-    return sendJson(res, 200, { ok: true, service: "jobpal-automation-runner" });
+// ─── Resume handler (fire-and-forget) ────────────────────────────────────────
+
+async function handleResume(appId, userId) {
+  const session = activeSessions.get(appId);
+  if (!session) {
+    console.warn(`[resume] No active session for ${appId}`);
+    return {
+      httpStatus: 404,
+      body: { error: `No active session for application ${appId}. It may have already completed.` },
+    };
   }
 
+  console.log(`[resume] Writing done-signal for ${appId}`);
+  try {
+    await fs.writeFile(session.doneFile, "done");
+  } catch (e) {
+    return { httpStatus: 500, body: { error: `Could not write done signal: ${e.message}` } };
+  }
+
+  // Fire-and-forget: let Playwright finish in the background and write the final
+  // state to Supabase directly. The caller (Edge Function) gets a 202 immediately
+  // and does not need to wait — Supabase Edge Function timeouts are avoided.
+  const bgUserId = userId;
+  (async () => {
+    try {
+      console.log(`[resume] Awaiting Playwright completion for ${appId} in background ...`);
+      const procResult = await session.exitPromise;
+      console.log(`[resume] Playwright finished for ${appId} with code ${procResult.code}`);
+      activeSessions.delete(appId);
+
+      const { httpStatus, body } = await readArtifacts(session.outputDir, session.runId, procResult);
+      console.log(`[resume] Artifacts read for ${appId}: status=${body.status}`);
+
+      await pushToSupabase(appId, bgUserId, body);
+    } catch (e) {
+      console.error(`[resume] Background completion failed for ${appId}:`, e.message);
+    } finally {
+      for (const f of session.cleanupPaths) fs.rm(f, { force: true }).catch(() => {});
+      fs.rm(session.tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  })();
+
+  // Return immediately so the Edge Function is not held open
+  return { httpStatus: 202, body: { status: "human_action_completed", message: "Resume signal sent; automation continuing in background." } };
+}
+
+// ─── noVNC static file serving ────────────────────────────────────────────────
+
+async function serveNoVnc(req, res) {
+  const rawPath = req.url.replace(/^\/vnc/, "").split("?")[0] || "/";
+  const safePath = path.normalize(rawPath).replace(/^(\.\.[/\\])+/, "");
+  const candidates = [
+    path.join(NOVNC_STATIC, safePath),
+    path.join(NOVNC_STATIC, safePath, "vnc.html"),
+    path.join(NOVNC_STATIC, safePath, "index.html"),
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate.startsWith(NOVNC_STATIC)) continue; // path traversal guard
+    try {
+      const stat = await fs.stat(candidate);
+      if (stat.isFile()) {
+        const ext = path.extname(candidate).toLowerCase();
+        res.writeHead(200, { "Content-Type": MIME[ext] ?? "application/octet-stream" });
+        createReadStream(candidate).pipe(res);
+        return;
+      }
+    } catch {
+      /* try next */
+    }
+  }
+
+  res.writeHead(404, { "Content-Type": "text/plain" });
+  res.end("noVNC file not found");
+}
+
+// ─── HTTP server ──────────────────────────────────────────────────────────────
+
+const server = createServer(async (req, res) => {
+  // Health check
+  if (req.method === "GET" && req.url === "/healthz") {
+    return sendJson(res, 200, {
+      ok: true,
+      service: "jobpal-automation-runner",
+      active_sessions: activeSessions.size,
+    });
+  }
+
+  // noVNC static files
+  if (req.method === "GET" && req.url?.startsWith("/vnc")) {
+    return serveNoVnc(req, res);
+  }
+
+  // POST /run — start a new automation run
   if (req.method === "POST" && req.url === "/run") {
     try {
-      if (shouldRejectForAuth(req)) {
-        return sendJson(res, 401, { error: "Unauthorized runner token" });
-      }
+      if (shouldRejectForAuth(req)) return sendJson(res, 401, { error: "Unauthorized runner token" });
 
       const payload = await readJsonBody(req);
       if (!payload?.job_url || typeof payload.job_url !== "string") {
@@ -365,10 +645,81 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  // POST /resume — signal a paused Playwright to continue (fire-and-forget)
+  if (req.method === "POST" && req.url === "/resume") {
+    try {
+      if (shouldRejectForAuth(req)) return sendJson(res, 401, { error: "Unauthorized runner token" });
+
+      const body = await readJsonBody(req);
+      const appId = typeof body.application_id === "string" ? body.application_id.trim() : "";
+      const userId = typeof body.user_id === "string" ? body.user_id.trim() : "";
+      if (!appId) return sendJson(res, 400, { error: "Missing application_id" });
+
+      const result = await handleResume(appId, userId);
+      return sendJson(res, result.httpStatus, result.body);
+    } catch (error) {
+      return sendJson(res, 500, {
+        status: "failed",
+        hard_blocker: false,
+        error: error instanceof Error ? error.message : "Unexpected resume error",
+      });
+    }
+  }
+
   return sendJson(res, 404, { error: "Not found" });
 });
 
-server.listen(PORT, () => {
-  // eslint-disable-next-line no-console
-  console.log(`JobPal runner listening on port ${PORT}`);
+// ─── WebSocket proxy: /vnc-ws → websockify :6080 ─────────────────────────────
+
+server.on("upgrade", (req, socket, head) => {
+  if (!req.url?.startsWith("/vnc-ws")) {
+    socket.destroy();
+    return;
+  }
+
+  const target = net.connect({ port: VNC_WS_PORT, host: "localhost" }, () => {
+    // Forward the original HTTP upgrade request headers verbatim
+    const firstLine = `GET ${req.url} HTTP/1.1\r\n`;
+    const headers =
+      Object.entries(req.headers)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join("\r\n") + "\r\n\r\n";
+    target.write(firstLine + headers);
+    if (head?.length) target.write(head);
+    target.pipe(socket);
+    socket.pipe(target);
+  });
+
+  target.on("error", (e) => {
+    console.error("[ws-proxy] VNC proxy error:", e.message);
+    socket.destroy();
+  });
+  socket.on("error", () => target.destroy());
+  socket.on("close", () => target.destroy());
+});
+
+// ─── Boot sequence ────────────────────────────────────────────────────────────
+
+async function main() {
+  try {
+    await startXvfb();
+    // Give x11vnc and websockify a moment after Xvfb
+    startX11vnc();
+    await sleep(1000);
+    startWebsockify();
+    await sleep(500);
+  } catch (e) {
+    console.error("[boot] Failed to start Xvfb/VNC stack:", e.message);
+    console.warn("[boot] Continuing without VNC — CAPTCHA handoff will not show live browser.");
+  }
+
+  server.listen(PORT, () => {
+    console.log(`JobPal runner listening on port ${PORT}`);
+    console.log(`VNC URL template: ${buildVncUrl()}`);
+  });
+}
+
+main().catch((e) => {
+  console.error("Fatal boot error:", e);
+  process.exit(1);
 });

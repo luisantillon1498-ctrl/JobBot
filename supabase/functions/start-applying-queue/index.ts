@@ -8,6 +8,8 @@ const corsHeaders = {
 };
 
 const RUNNER_TIMEOUT_MS = 120_000;
+// Resume calls return 202 immediately (fire-and-forget); 15 s is plenty.
+const RESUME_RUNNER_TIMEOUT_MS = 15_000;
 const SIGNED_URL_TTL_SECONDS = 2 * 60 * 60;
 const PG_INT_MAX = 2147483647;
 
@@ -32,8 +34,8 @@ type RunnerResult = {
   unanswered_questions?: unknown[];
   blocked_reason?: string;
   error?: string;
-  steel_live_url?: string;
-  steel_session_id?: string;
+  /** noVNC live-view URL (self-hosted, replaces Steel live URL) */
+  vnc_url?: string;
 };
 
 function json(status: number, body: Record<string, unknown>) {
@@ -136,6 +138,9 @@ serve(async (req) => {
     }
 
     const runnerToken = Deno.env.get("JOBPAL_AUTOMATION_RUNNER_TOKEN")?.trim();
+    // Derive the runner's base URL (strip trailing /run)
+    const runnerBaseUrl = runnerUrl.replace(/\/run\/?$/, "").replace(/\/$/, "");
+
     const serviceClient = createClient(Deno.env.get("SUPABASE_URL")!, serviceRoleKey, {
       auth: { persistSession: false },
     });
@@ -316,6 +321,66 @@ serve(async (req) => {
       if (hardStop) break;
       const appId = String(app.id);
 
+      // ── Resume mode: fire-and-forget signal to the runner ─────────────────
+      // The runner returns 202 immediately; Playwright keeps running in the
+      // background and writes the final state to Supabase directly.
+      // We record human_action_completed here and let the runner update it to
+      // waiting_for_review / failed when Playwright finishes.
+      if (resumeMode) {
+        await logState({
+          appId,
+          state: "human_action_completed",
+          description: "Resume signal sent to runner — Playwright resuming autofill in background",
+          context: { queue_priority: app.automation_queue_priority, job_url: app.job_url },
+        });
+
+        let resumeResponse: Response | null = null;
+        try {
+          resumeResponse = await fetch(`${runnerBaseUrl}/resume`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...(runnerToken ? { Authorization: `Bearer ${runnerToken}` } : {}),
+            },
+            // Pass user_id so the runner can write back to Supabase with correct RLS filter
+            body: JSON.stringify({ application_id: appId, user_id: user.id }),
+            signal: AbortSignal.timeout(RESUME_RUNNER_TIMEOUT_MS),
+          });
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "Resume call failed";
+          await logState({
+            appId,
+            state: "waiting_for_human_action",
+            description: "Resume failed: could not reach runner",
+            reason,
+            context: { hard_blocker: false },
+          });
+          outcomes.push({ application_id: appId, state: "waiting_for_human_action", hard_blocker: false, reason });
+          continue;
+        }
+
+        // 202 = fire-and-forget accepted; anything else is an error
+        if (resumeResponse.status === 202 || resumeResponse.status === 200) {
+          // Success — runner acknowledged the resume signal.
+          // Final state (waiting_for_review / failed) will be written by the runner
+          // directly to Supabase when Playwright completes. The frontend polls on reload.
+          outcomes.push({ application_id: appId, state: "human_action_completed", hard_blocker: false });
+        } else {
+          let resumeBody: RunnerResult = {};
+          try { resumeBody = (await resumeResponse.json()) as RunnerResult; } catch { resumeBody = {}; }
+          const reason = pickRunnerError(resumeBody, `Runner /resume returned ${resumeResponse.status}`);
+          await logState({
+            appId,
+            state: "waiting_for_human_action",
+            description: "Resume runner call failed",
+            reason,
+          });
+          outcomes.push({ application_id: appId, state: "waiting_for_human_action", hard_blocker: false, reason });
+        }
+        continue;
+      }
+
+      // ── Normal mode: start a fresh Playwright run ──────────────────────────
       await logState({
         appId,
         state: "autofilling",
@@ -507,11 +572,7 @@ serve(async (req) => {
       }
 
       let body: RunnerResult = {};
-      try {
-        body = (await runnerResponse.json()) as RunnerResult;
-      } catch {
-        body = {};
-      }
+      try { body = (await runnerResponse.json()) as RunnerResult; } catch { body = {}; }
 
       if (!runnerResponse.ok) {
         const reason = pickRunnerError(body, `Runner returned ${runnerResponse.status}`);
@@ -531,6 +592,20 @@ serve(async (req) => {
         continue;
       }
 
+      await processRunnerResult({ appId, app, body, runnerBaseUrl });
+      const last = outcomes[outcomes.length - 1];
+      if (last?.hard_blocker) hardStop = true;
+    }
+
+    // ── Shared result processor ──────────────────────────────────────────────
+    async function processRunnerResult(args: {
+      appId: string;
+      app: AppRow;
+      body: RunnerResult;
+      runnerBaseUrl: string;
+    }) {
+      const { appId, body } = args;
+
       const unanswered = Array.isArray(body.unanswered_questions) ? body.unanswered_questions : [];
       if (unanswered.length > 0) {
         const reason = "Unanswered eligibility question requires review";
@@ -547,7 +622,7 @@ serve(async (req) => {
           },
         });
         outcomes.push({ application_id: appId, state: "waiting_for_human_action", hard_blocker: false, reason });
-        continue;
+        return;
       }
 
       const returnedStatus = typeof body.status === "string" ? body.status : "";
@@ -572,6 +647,9 @@ serve(async (req) => {
           ? handoffCategoryFromText(runnerMsg, typeof body.message === "string" ? body.message : "", returnedStatus)
           : null;
 
+      // The runner now returns vnc_url (self-hosted noVNC) instead of steel_live_url
+      const liveUrl = body.vnc_url ?? null;
+
       await logState({
         appId,
         state: finalState,
@@ -580,7 +658,7 @@ serve(async (req) => {
             ? "Autofill completed; queue handoff stopped before submit and is waiting for review"
             : finalState === "waiting_for_human_action"
               ? returnedStatus === "waiting_for_human_action"
-                ? "Queue handoff paused for human verification (headed re-run or live session required)"
+                ? "Queue handoff paused for human verification (live browser available via noVNC)"
                 : "Queue handoff paused due to blocker"
               : "Queue handoff marked failed",
         reason,
@@ -589,15 +667,22 @@ serve(async (req) => {
           final_url: body.final_url ?? null,
           hard_blocker: body.hard_blocker === true,
           handoff_category: handoffCat,
-          steel_live_url: body.steel_live_url ?? null,
-          steel_session_id: body.steel_session_id ?? null,
+          vnc_url: liveUrl,
         },
       });
 
-      if (finalState === "waiting_for_human_action" && body.steel_live_url) {
+      // Persist the noVNC live URL so the frontend can show the iframe without a join
+      if (finalState === "waiting_for_human_action" && liveUrl) {
         await serviceClient
           .from("applications")
-          .update({ automation_live_url: body.steel_live_url })
+          .update({ automation_live_url: liveUrl })
+          .eq("id", appId)
+          .eq("user_id", user.id);
+      } else if (finalState !== "waiting_for_human_action") {
+        // Clear the live URL once the run is no longer paused
+        await serviceClient
+          .from("applications")
+          .update({ automation_live_url: null })
           .eq("id", appId)
           .eq("user_id", user.id);
       }
@@ -607,9 +692,8 @@ serve(async (req) => {
         state: finalState,
         hard_blocker: body.hard_blocker === true,
         reason,
-        ...(body.steel_live_url ? { steel_live_url: body.steel_live_url } : {}),
+        ...(liveUrl ? { steel_live_url: liveUrl } : {}), // keep field name for compat with frontend type
       });
-      if (body.hard_blocker === true) hardStop = true;
     }
 
     return json(200, {

@@ -1,15 +1,16 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium, test, expect } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import { createRunDir, payloadFromEnv, saveDomSnapshot, saveScreenshot, writeJson, writeMeta } from "./lib/artifacts";
 import { fillAshbyApplicationForm } from "./lib/ashby";
 import { detectBlockers } from "./lib/blockers";
 import { fillGreenhouseApplicationForm } from "./lib/greenhouse";
 import {
-  hasSteelSession,
   humanActionDoneSignalPath,
   humanChallengeTimeoutMs,
   saveHumanHandoffArtifacts,
+  waitForResumeSignal,
   waitUntilHumanChallengeCleared,
 } from "./lib/humanHandoff";
 import { detectHumanChallenge } from "./lib/humanChallenge";
@@ -31,6 +32,11 @@ function outputBaseDir(): string {
   return path.resolve(automationDir, "output");
 }
 
+/** Path to the paused-signal file written by this spec when CAPTCHA is detected. */
+function pausedFilePath(): string | undefined {
+  return process.env.JOBPAL_PAUSED_FILE?.trim() || undefined;
+}
+
 const CRITICAL_FILL_FIELDS = ["first_name", "last_name", "email"] as const;
 
 test.describe("Application form automation", () => {
@@ -39,24 +45,8 @@ test.describe("Application form automation", () => {
     test.skip(!url, "Set JOBPAL_JOB_URL to a job posting URL.");
     if (!url) return;
 
-    // Connect to Steel.dev remote browser if CDP URL is provided, else use fixture page
-    const steelCdpUrl = process.env.JOBPAL_STEEL_CDP_URL?.trim();
-    let activePage = page; // default: use Playwright fixture page
-    let steelBrowser: import("@playwright/test").Browser | null = null;
-
-    if (steelCdpUrl) {
-      try {
-        console.log(`[steel] Connecting via CDP: ${steelCdpUrl}`);
-        steelBrowser = await chromium.connectOverCDP(steelCdpUrl);
-        const steelContext = steelBrowser.contexts()[0];
-        activePage = steelContext.pages()[0] ?? await steelContext.newPage();
-        console.log("[steel] CDP connection established");
-      } catch (cdpErr) {
-        console.error("[steel] CDP connection failed, falling back to local browser:", cdpErr);
-        steelBrowser = null;
-        // activePage stays as the local Playwright fixture page
-      }
-    }
+    // Always use the Playwright fixture page (no Steel / remote browser)
+    const activePage = page;
 
     const paths = await createRunDir(outputBaseDir());
     const payload = payloadFromEnv();
@@ -84,7 +74,6 @@ test.describe("Application form automation", () => {
       await saveScreenshot(activePage, paths.screenshotBeforePath);
       await outcomeLogger.syncSessionArtifacts(paths);
 
-      const headed = testInfo.project.use.headless === false;
       const human = await detectHumanChallenge(activePage);
       if (human.present) {
         await outcomeLogger.appendLocalAndSession(paths, "human_verification_detected");
@@ -93,12 +82,12 @@ test.describe("Application form automation", () => {
           page: activePage,
           jobUrl: url,
           detail: human.detail,
-          headed,
+          headed: true,
         });
         await outcomeLogger.logLifecycle({
           phase: "captcha_encountered",
           description: "Captcha or human verification encountered — pausing for human action",
-          context: { detail: human.detail, headed },
+          context: { detail: human.detail },
           paths,
           finalUrl: activePage.url(),
         });
@@ -106,71 +95,79 @@ test.describe("Application form automation", () => {
           state: "waiting_for_human_action",
           description: "Waiting for human action (verification / captcha)",
           handoffReason: "human_verification",
-          context: { handoff: "human_in_the_loop", headed, detail: human.detail },
+          context: { handoff: "human_in_the_loop", detail: human.detail },
           paths,
           finalUrl: activePage.url(),
         });
         await outcomeLogger.syncSessionArtifacts(paths);
 
-        // In headless mode (production runner), exit immediately and surface the Steel live URL.
-        // The Steel session stays alive so the user can solve the challenge in the iframe.
-        // In headed mode (local dev), pause so the developer can interact directly.
-        if (!headed) {
-          status = { kind: "waiting_for_human_action", detail: human.detail };
-          await writeMeta(paths, { jobUrl: url, site, status, finalUrl: activePage.url() });
-          await writeJson(paths.payloadPath, {
-            payload,
-            fillReport: null,
-            note: hasSteelSession() ? "human_verification_steel_live_session" : "human_verification_requires_headed_browser",
-            filesUploaded: [],
-            readyForUserReview: false,
-          });
-          await outcomeLogger.appendLocalAndSession(paths, "human_handoff_headless_exit");
-          await outcomeLogger.logLifecycle({
-            phase: "run_suspended_headless",
-            description: hasSteelSession()
-              ? "Run suspended: human verification required — Steel live session active for manual solve"
-              : "Run suspended: human verification requires a headed browser; queue remains waiting for human action (not a failure)",
-            context: { detail: human.detail, steel: hasSteelSession() },
-            paths,
-            finalUrl: activePage.url(),
-          });
-          await outcomeLogger.syncSessionArtifacts(paths);
-          return;
-        }
+        const paused = pausedFilePath();
+        const doneSignal = humanActionDoneSignalPath();
 
-        // Headed (local dev only): pause so developer can interact.
-        await outcomeLogger.appendLocalAndSession(paths, "human_handoff_browser_active");
-        await activePage.pause();
-        const cleared = await waitUntilHumanChallengeCleared(activePage, {
-          timeoutMs: humanChallengeTimeoutMs(),
-          signalFile: humanActionDoneSignalPath(),
-        });
-        if (!cleared.ok) {
-          status = {
-            kind: "error",
-            message: cleared.reason ?? "Human verification did not complete in time.",
-          };
-          await writeMeta(paths, { jobUrl: url, site, status, finalUrl: activePage.url() });
-          await outcomeLogger.appendLocalAndSession(paths, "human_handoff_timeout");
+        if (paused && doneSignal) {
+          // Production (server-managed) mode:
+          // 1. Write paused-file so the server knows we're waiting.
+          // 2. Block until the server writes the done-file (user clicked Resume).
+          // 3. Continue with form filling — the CAPTCHA should be gone.
+          await fs.writeFile(paused, "paused");
+          await outcomeLogger.appendLocalAndSession(paths, "human_handoff_paused_signal_written");
+          console.log(`[spec] Paused signal written. Waiting for resume at: ${doneSignal}`);
+
+          const resumed = await waitForResumeSignal(doneSignal, humanChallengeTimeoutMs());
+          if (!resumed) {
+            status = { kind: "error", message: "Timed out waiting for human verification resume signal." };
+            await writeMeta(paths, { jobUrl: url, site, status, finalUrl: activePage.url() });
+            await outcomeLogger.logState({
+              state: "failed",
+              description: "Human verification timed out waiting for resume signal",
+              reason: status.message,
+              paths,
+              finalUrl: activePage.url(),
+            });
+            throw new Error(status.message);
+          }
+
           await outcomeLogger.logState({
-            state: "failed",
-            description: "Human verification handoff timed out or session could not be resumed",
-            reason: status.message,
+            state: "human_action_completed",
+            description: "Resume signal received — continuing autofill",
             paths,
             finalUrl: activePage.url(),
           });
-          throw new Error(status.message);
-        }
+          await outcomeLogger.appendLocalAndSession(paths, "human_challenge_cleared");
+          await outcomeLogger.syncSessionArtifacts(paths);
+          // Fall through — continue with blocker check and form fill
+        } else {
+          // Local dev mode (no server paused/done files configured):
+          // Use Playwright Inspector so the developer can interact directly.
+          await outcomeLogger.appendLocalAndSession(paths, "human_handoff_browser_active");
+          await activePage.pause();
+          const cleared = await waitUntilHumanChallengeCleared(activePage, {
+            timeoutMs: humanChallengeTimeoutMs(),
+            signalFile: doneSignal,
+          });
+          if (!cleared.ok) {
+            status = { kind: "error", message: cleared.reason ?? "Human verification did not complete in time." };
+            await writeMeta(paths, { jobUrl: url, site, status, finalUrl: activePage.url() });
+            await outcomeLogger.appendLocalAndSession(paths, "human_handoff_timeout");
+            await outcomeLogger.logState({
+              state: "failed",
+              description: "Human verification handoff timed out",
+              reason: status.message,
+              paths,
+              finalUrl: activePage.url(),
+            });
+            throw new Error(status.message);
+          }
 
-        await outcomeLogger.logState({
-          state: "human_action_completed",
-          description: "Human action completed — verification cleared; resuming same browser session",
-          paths,
-          finalUrl: activePage.url(),
-        });
-        await outcomeLogger.appendLocalAndSession(paths, "human_challenge_cleared");
-        await outcomeLogger.syncSessionArtifacts(paths);
+          await outcomeLogger.logState({
+            state: "human_action_completed",
+            description: "Human action completed — verification cleared; resuming same browser session",
+            paths,
+            finalUrl: activePage.url(),
+          });
+          await outcomeLogger.appendLocalAndSession(paths, "human_challenge_cleared");
+          await outcomeLogger.syncSessionArtifacts(paths);
+        }
       }
 
       const blocker = await detectBlockers(activePage);
@@ -179,12 +176,7 @@ test.describe("Application form automation", () => {
         await saveScreenshot(activePage, blockedShotPath);
         await outcomeLogger.appendLocalAndSession(paths, `handoff:${blocker.kind}`);
         status = { kind: "blocked", blocker: blocker.kind, detail: blocker.detail };
-        await writeMeta(paths, {
-          jobUrl: url,
-          site,
-          status,
-          finalUrl: activePage.url(),
-        });
+        await writeMeta(paths, { jobUrl: url, site, status, finalUrl: activePage.url() });
         await writeJson(paths.payloadPath, {
           payload,
           fillReport: null,
@@ -337,12 +329,7 @@ test.describe("Application form automation", () => {
       } catch {
         /* page may be closed */
       }
-      await writeMeta(paths, {
-        jobUrl: url,
-        site,
-        status,
-        finalUrl,
-      });
+      await writeMeta(paths, { jobUrl: url, site, status, finalUrl });
       await outcomeLogger.appendLocalAndSession(paths, `failed:${message}`);
       await outcomeLogger.logState({
         state: "failed",
@@ -353,8 +340,6 @@ test.describe("Application form automation", () => {
         finalUrl,
       });
       throw e;
-    } finally {
-      if (steelBrowser) await steelBrowser.close().catch(() => {});
     }
 
     expect(status.kind === "blocked", "blocked runs should have been skipped earlier").toBe(false);

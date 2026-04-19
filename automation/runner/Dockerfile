@@ -5,10 +5,15 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
+RUN apt-get update && apt-get install -y \
+    xvfb x11vnc websockify novnc net-tools \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY . .
 
 ENV NODE_ENV=production
 ENV PORT=8080
+ENV DISPLAY=:99
 
 EXPOSE 8080
 

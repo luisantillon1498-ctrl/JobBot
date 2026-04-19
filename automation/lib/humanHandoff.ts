@@ -5,10 +5,6 @@ import type { ArtifactPaths } from "../types";
 import { appendRunLog, saveDomSnapshot, saveScreenshot, writeJson } from "./artifacts";
 import { detectHumanChallenge } from "./humanChallenge";
 
-export function hasSteelSession(): boolean {
-  return Boolean(process.env.JOBPAL_STEEL_SESSION_ID?.trim());
-}
-
 export function humanActionDoneSignalPath(): string | undefined {
   const p = process.env.JOBPAL_HUMAN_ACTION_DONE_FILE?.trim();
   return p || undefined;
@@ -20,7 +16,7 @@ export function humanChallengeTimeoutMs(): number {
     const n = Number(raw);
     if (Number.isFinite(n) && n > 0) return n;
   }
-  return 900_000;
+  return 1_800_000; // 30 minutes — enough time for most CAPTCHA solves
 }
 
 export async function saveHumanHandoffArtifacts(args: {
@@ -40,19 +36,45 @@ export async function saveHumanHandoffArtifacts(args: {
     detail: args.detail,
     headed: args.headed,
     resumeHints: {
-      headed:
-        "Complete the check in the live Playwright browser window. In the Inspector, press Resume when verification is done; automation will recheck the page.",
-      headless:
-        "This run cannot expose a live browser. Re-run with Playwright --headed (or PWDEBUG=1) on a machine you control, or use a runner configured for interactive sessions.",
-      optionalSignalFile:
-        "If JOBPAL_HUMAN_ACTION_DONE_FILE is set to a filesystem path, creating that file signals completion; the file is deleted when observed and the page is rechecked.",
+      server:
+        "The runner writes a done-signal file (JOBPAL_HUMAN_ACTION_DONE_FILE) when the user clicks Resume. " +
+        "Playwright polls for this file and continues once it appears.",
+      local:
+        "When running locally without the runner, set JOBPAL_PAUSED_FILE and JOBPAL_HUMAN_ACTION_DONE_FILE " +
+        "manually, or use Playwright Inspector (activePage.pause()) to interact with the live browser.",
     },
   });
   await appendRunLog(args.paths, "human_handoff_artifacts_saved");
 }
 
 /**
- * Polls the main page until verification widgets/text are gone, or optional signal file appears (then unlink).
+ * Waits for the resume signal file to appear, then deletes it and returns true.
+ * Used in server-managed (production) mode: the runner writes the signal when the
+ * user clicks "Resume Automation" in the app.
+ */
+export async function waitForResumeSignal(
+  signalFile: string,
+  timeoutMs: number,
+  pollMs = 1000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await fs.access(signalFile);
+      // Found — delete it and return
+      try { await fs.unlink(signalFile); } catch { /* ignore */ }
+      return true;
+    } catch {
+      /* not present yet */
+    }
+    await new Promise<void>((r) => setTimeout(r, pollMs));
+  }
+  return false;
+}
+
+/**
+ * Polls the page until verification widgets/text are gone, or the optional
+ * signal file appears (then unlinks it).  Used in local-dev / headless fallback.
  */
 export async function waitUntilHumanChallengeCleared(
   page: Page,
@@ -65,11 +87,9 @@ export async function waitUntilHumanChallengeCleared(
     if (options.signalFile) {
       try {
         await fs.access(options.signalFile);
-        try {
-          await fs.unlink(options.signalFile);
-        } catch {
-          /* ignore */
-        }
+        try { await fs.unlink(options.signalFile); } catch { /* ignore */ }
+        // Signal received — trust the user and return success
+        return { ok: true };
       } catch {
         /* not present */
       }

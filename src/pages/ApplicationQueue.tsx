@@ -484,21 +484,48 @@ export default function ApplicationQueue() {
                                       )}
                                     </AlertDescription>
                                   </Alert>
-                                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-4 py-3 space-y-2">
-                                    <p className="text-sm text-muted-foreground">
-                                      Open the job page in your browser, complete the verification, then click <strong>Resume Automation</strong>.
-                                    </p>
-                                    {row.job_url && (
-                                      <a
-                                        href={row.job_url}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="inline-flex items-center gap-1.5 text-sm font-medium text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:text-amber-600"
-                                      >
-                                        Open job page ↗
-                                      </a>
-                                    )}
-                                  </div>
+                                  {row.automation_live_url ? (
+                                    /* noVNC live browser — user interacts directly in this iframe */
+                                    <div className="rounded-lg border border-amber-500/40 overflow-hidden">
+                                      <div className="bg-amber-500/10 px-3 py-1.5 flex items-center justify-between border-b border-amber-500/30">
+                                        <span className="text-xs font-medium text-amber-700 dark:text-amber-400">
+                                          Live browser — complete the verification below, then click Resume
+                                        </span>
+                                        <a
+                                          href={row.automation_live_url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-xs text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:text-amber-600"
+                                        >
+                                          Open in new tab ↗
+                                        </a>
+                                      </div>
+                                      <iframe
+                                        src={row.automation_live_url}
+                                        className="w-full border-0"
+                                        style={{ height: "480px" }}
+                                        title={`Live browser for ${row.company_name} — ${row.job_title}`}
+                                        allow="clipboard-read; clipboard-write"
+                                      />
+                                    </div>
+                                  ) : (
+                                    /* Fallback when noVNC URL not yet available */
+                                    <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-4 py-3 space-y-2">
+                                      <p className="text-sm text-muted-foreground">
+                                        Open the job page in your browser, complete the verification, then click <strong>Resume Automation</strong>.
+                                      </p>
+                                      {row.job_url && (
+                                        <a
+                                          href={row.job_url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="inline-flex items-center gap-1.5 text-sm font-medium text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:text-amber-600"
+                                        >
+                                          Open job page ↗
+                                        </a>
+                                      )}
+                                    </div>
+                                  )}
                                   <Button
                                     onClick={() => void handleResume(row.id)}
                                     disabled={resumingId === row.id}
