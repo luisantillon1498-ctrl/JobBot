@@ -426,11 +426,41 @@ async function extractFieldCandidates(page: Page): Promise<CandidateField[]> {
   });
 }
 
+/**
+ * Human-readable labels for enum values stored in the DB.
+ * Used when filling free-text inputs (not selects/radios) so the form shows
+ * "Prefer not to say" rather than the raw "prefer_not_to_say" enum string.
+ */
+const HUMAN_READABLE: Partial<Record<string, string>> = {
+  // gender
+  man:                         "Man",
+  male:                        "Male",
+  woman:                       "Woman",
+  female:                      "Female",
+  non_binary:                  "Non-Binary",
+  other:                       "Other",
+  prefer_not_to_say:           "Prefer not to say",
+  // hispanic_ethnicity
+  yes:                         "Yes",
+  no:                          "No",
+  // veteran_status
+  not_a_protected_veteran:     "I am not a protected veteran",
+  protected_veteran:           "I am a protected veteran",
+  decline_to_answer:           "I prefer not to answer",
+  // disability_status
+  no_disability:               "No, I do not have a disability",
+  has_disability:              "Yes, I have a disability",
+};
+
 function payloadValueForTarget(payload: ApplicantPayload, target: SupportedFieldKey): string | undefined {
   if (target === "full_name") {
     return [payload.first_name, payload.last_name].filter(Boolean).join(" ") || payload.full_name;
   }
-  return payload[target];
+  const raw = payload[target];
+  if (!raw) return raw;
+  // Return the human-readable label so free-text inputs get readable values;
+  // selects/radios use matchesOption which handles both raw and label forms.
+  return HUMAN_READABLE[raw] ?? raw;
 }
 
 function buildMappingPlan(site: AtsPlanSite, candidates: CandidateField[], payload: ApplicantPayload): FieldMappingPlan {
