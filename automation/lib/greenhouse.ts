@@ -114,24 +114,34 @@ async function fillGreenhouseCustomDropdowns(page: Page, payload: ApplicantPaylo
           label.locator("xpath=../.."),
           label.locator("xpath=../../.."),
         ]) {
-          // For country, skip the intl-tel-input phone widget's country selector
-          if (isCountry) {
-            const isPhoneWidget = await ancestor
-              .locator(".iti, .intl-tel-input, [class*='iti__']")
-              .count()
-              .catch(() => 0);
-            if (isPhoneWidget > 0) continue;
-          }
-
           const btn = ancestor
             .locator(
               "button[aria-haspopup], [role='combobox'], .select-dropdown--button, [class*='select' i][class*='control' i]",
             )
             .first();
-          if ((await btn.count()) > 0) { triggerEl = btn; break; }
+          if ((await btn.count()) > 0) {
+            // For country: skip if this trigger is inside the phone widget
+            if (isCountry) {
+              const insidePhone = await btn
+                .evaluate((el) => !!el.closest(".iti, .intl-tel-input, [data-intl-tel-input-id]"))
+                .catch(() => false);
+              if (insidePhone) continue;
+            }
+            triggerEl = btn;
+            break;
+          }
 
           const placeholder = ancestor.locator(":text('Select...')").first();
-          if ((await placeholder.count()) > 0) { triggerEl = placeholder; break; }
+          if ((await placeholder.count()) > 0) {
+            if (isCountry) {
+              const insidePhone = await placeholder
+                .evaluate((el) => !!el.closest(".iti, .intl-tel-input, [data-intl-tel-input-id]"))
+                .catch(() => false);
+              if (insidePhone) continue;
+            }
+            triggerEl = placeholder;
+            break;
+          }
         }
         if (triggerEl) break;
       }
@@ -176,6 +186,45 @@ async function fillGreenhouseCustomDropdowns(page: Page, payload: ApplicantPaylo
 }
 
 /**
+ * The Greenhouse "Location (City)" field uses Google Places Autocomplete.
+ * Typing text and leaving triggers a clear if no suggestion is selected.
+ * This helper types just the city name and selects the first autocomplete suggestion.
+ */
+async function fillGreenhouseLocationField(page: Page, payload: ApplicantPayload): Promise<void> {
+  if (!payload.location) return;
+  // Extract just the city (first part before any comma)
+  const city = payload.location.split(",")[0].trim();
+  if (!city) return;
+
+  try {
+    const locInput = page
+      .locator("input[id*='location' i], input[name*='location' i], input[placeholder*='city' i]")
+      .first();
+    if ((await locInput.count()) === 0) return;
+
+    await locInput.click({ timeout: 3000 });
+    await locInput.fill("");
+    await locInput.pressSequentially(city, { delay: 60 });
+    await page.waitForTimeout(1200); // wait for autocomplete to populate
+
+    // Try to select the first autocomplete suggestion
+    const suggestion = page
+      .locator(".pac-item, [class*='autocomplete'] li, [class*='suggestion'], [role='option']")
+      .first();
+    if ((await suggestion.count()) > 0) {
+      await suggestion.click({ timeout: 3000 });
+      console.log("[gh-location] selected autocomplete suggestion for city:", city);
+    } else {
+      // No autocomplete shown — commit the typed value with Tab
+      await locInput.press("Tab");
+      console.log("[gh-location] no autocomplete; committed city with Tab:", city);
+    }
+  } catch (err) {
+    console.log("[gh-location] error:", err);
+  }
+}
+
+/**
  * Best-effort fill for public Greenhouse job forms (boards / embeds).
  * Does not submit. Skips missing fields without throwing.
  */
@@ -195,6 +244,7 @@ export async function fillGreenhouseApplicationForm(page: Page, payload: Applica
   const report = await fillAtsApplicationForm(formPage, payload, "greenhouse");
   // EEO + Country dropdowns are custom React Select components — fill them separately.
   await fillGreenhouseCustomDropdowns(formPage, payload);
+  await fillGreenhouseLocationField(formPage, payload);
   return report;
 }
 
