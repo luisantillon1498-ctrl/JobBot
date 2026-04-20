@@ -98,65 +98,130 @@ const ORDERED_TARGETS: SupportedFieldKey[] = [
 ];
 
 const BASE_FIELD_PATTERNS: Record<SupportedFieldKey, RegExp[]> = {
-  first_name: [/\blegal first name\b/i, /\bfirst name\b/i, /\bgiven name\b/i, /\bforename\b/i, /\bpreferred name\b/i],
-  last_name: [/\blast name\b/i, /\bfamily name\b/i, /\bsurname\b/i],
-  email: [/\bemail\b/i, /\be-mail\b/i],
-  phone: [/\bphone number\b/i, /\bphone\b/i, /\bmobile number\b/i, /\bmobile\b/i, /\bcell\b/i],
-  linkedin_url: [/\blinkedin\b/i, /\blinkedin profile\b/i, /\bportfolio\b/i, /\bwebsite\b/i],
-  resume_path: [/\bresume\b/i, /\bcv\b/i, /\bupload resume\b/i, /\bupload cv\b/i, /\bupload file\b/i],
-  cover_letter_path: [/\bcover letter\b/i, /\bupload cover letter\b/i],
-  location: [/\blocation\b/i, /\bcity\b/i, /\baddress\b/i, /\bcurrent location\b/i],
-  work_authorization: [/\bwork authorization\b/i, /\bauthorized to work\b/i, /\bvisa sponsorship\b/i, /\brequire sponsorship\b/i],
-  salary_expectations: [/\bsalary expectations?\b/i, /\bdesired salary\b/i, /\bcompensation expectations?\b/i],
+  first_name: [
+    /\blegal first name\b/i, /\bfirst name\b/i, /\bgiven name\b/i,
+    /\bforename\b/i, /\bpreferred name\b/i, /\bfirst\b/i,
+  ],
+  last_name: [
+    /\blast name\b/i, /\bfamily name\b/i, /\bsurname\b/i, /\blast\b/i,
+  ],
+  email: [
+    /\bemail address\b/i, /\bemail\b/i, /\be-mail\b/i,
+    /\bcontact email\b/i, /\bwork email\b/i,
+  ],
+  phone: [
+    /\bphone number\b/i, /\bphone\b/i, /\bmobile number\b/i,
+    /\bmobile\b/i, /\bcell\b/i, /\btelephone\b/i, /\bcontact number\b/i,
+  ],
+  linkedin_url: [
+    /\blinkedin profile url\b/i, /\blinkedin url\b/i, /\blinkedin\b/i,
+    /\blinkedin profile\b/i, /\bportfolio url\b/i, /\bportfolio\b/i,
+    /\bwebsite url\b/i, /\bpersonal website\b/i,
+  ],
+  resume_path: [
+    /\bupload resume\b/i, /\bupload your resume\b/i, /\battach resume\b/i,
+    /\bresume\b/i, /\bcv\b/i, /\bupload cv\b/i, /\battach cv\b/i,
+    /\bupload file\b/i, /\bresume file\b/i,
+  ],
+  cover_letter_path: [
+    /\bcover letter\b/i, /\bupload cover letter\b/i, /\battach cover letter\b/i,
+    /\bcover letter file\b/i,
+  ],
+  location: [
+    /\bcurrent location\b/i, /\bcity.*state\b/i, /\bcity\b/i,
+    /\blocation\b/i, /\baddress\b/i, /\bwhere are you located\b/i,
+  ],
+  work_authorization: [
+    /\bwork authorization\b/i, /\bauthorized to work\b/i,
+    /\brequire.*sponsorship\b/i, /\bvisa sponsorship\b/i,
+    /\bsponsorship required\b/i, /\blegally authorized\b/i,
+    /\bwork.*permit\b/i, /\bright to work\b/i,
+  ],
+  salary_expectations: [
+    /\bsalary expectations?\b/i, /\bdesired salary\b/i,
+    /\bcompensation expectations?\b/i, /\bexpected salary\b/i,
+    /\bpay expectations?\b/i,
+  ],
 };
 
 /** Extra positive signals per ATS (labels, data attrs, common vendor copy). */
 const SITE_FIELD_PATTERN_EXTRA: Record<AtsPlanSite, Partial<Record<SupportedFieldKey, RegExp[]>>> = {
-  greenhouse: {},
+  // Greenhouse label text is straightforward; ID patterns handle scoring (see SITE_ID_BAG_EXTRA_SCORE).
+  greenhouse: {
+    first_name:       [/\bfirst name\b/i, /\blegal first\b/i],
+    last_name:        [/\blast name\b/i, /\blegal last\b/i],
+    email:            [/\bemail\b/i],
+    phone:            [/\bphone\b/i],
+    resume_path:      [/\bresume\b/i],
+    cover_letter_path:[/\bcover letter\b/i],
+    location:         [/\blocation\b/i],
+    linkedin_url:     [/\blinkedin\b/i, /\bwebsite\b/i],
+    work_authorization:[/\bauthorized\b/i, /\bsponsorship\b/i, /\bwork authorization\b/i],
+  },
   workday: {
-    first_name: [/\blegal name\b.*\bfirst\b/i, /\bfirst\b.*\blegal\b/i],
-    last_name: [/\blegal name\b.*\blast\b/i, /\blast\b.*\blegal\b/i],
-    email: [/\bcontact email\b/i],
-    phone: [/\bphone device\b/i, /\bhome phone\b/i],
-    resume_path: [/\battach\b.*\bresume\b/i, /\bcv\b.*\battach\b/i],
-    linkedin_url: [/\blinkedin url\b/i],
-    location: [/\bcountry phone code\b/i],
+    first_name:       [/\blegal name\b.*\bfirst\b/i, /\bfirst\b.*\blegal\b/i, /\bfirst name\b/i],
+    last_name:        [/\blegal name\b.*\blast\b/i, /\blast\b.*\blegal\b/i, /\blast name\b/i],
+    email:            [/\bcontact email\b/i, /\bemail address\b/i],
+    phone:            [/\bphone device\b/i, /\bhome phone\b/i, /\bphone number\b/i],
+    resume_path:      [/\battach\b.*\bresume\b/i, /\bcv\b.*\battach\b/i, /\bupload resume\b/i],
+    cover_letter_path:[/\bcover letter\b/i, /\battach.*cover\b/i],
+    linkedin_url:     [/\blinkedin url\b/i, /\blinkedin profile\b/i],
+    location:         [/\bcity\b/i, /\bstate\b/i, /\baddress line\b/i],
+    work_authorization:[/\bwork authorization\b/i, /\bauthorized to work\b/i, /\bvisa\b/i],
+    salary_expectations:[/\bsalary\b/i, /\bcompensation\b/i],
   },
   ashby: {
-    first_name: [/\blegal first name\b/i],
-    last_name: [/\blegal last name\b/i],
-    email: [/\bemail address\b/i],
-    phone: [/\bphone number\b/i],
-    linkedin_url: [/\blinkedin profile url\b/i, /\blinkedin url\b/i],
-    resume_path: [/\bresume file\b/i, /\bupload your resume\b/i],
-    cover_letter_path: [/\bcover letter file\b/i],
-    location: [/\blocation\b/i],
+    first_name:       [/\blegal first name\b/i, /\bfirst name\b/i],
+    last_name:        [/\blegal last name\b/i, /\blast name\b/i],
+    email:            [/\bemail address\b/i, /\bemail\b/i],
+    phone:            [/\bphone number\b/i, /\bphone\b/i],
+    linkedin_url:     [/\blinkedin profile url\b/i, /\blinkedin url\b/i, /\blinkedin\b/i],
+    resume_path:      [/\bresume file\b/i, /\bupload your resume\b/i, /\bresume\b/i],
+    cover_letter_path:[/\bcover letter file\b/i, /\bcover letter\b/i],
+    location:         [/\blocation\b/i, /\bcity\b/i],
+    work_authorization:[/\bwork authorization\b/i, /\bauthorized\b/i],
   },
 };
 
 const SITE_ID_BAG_EXTRA_SCORE: Partial<
   Record<AtsPlanSite, Partial<Record<SupportedFieldKey, RegExp[]>>>
 > = {
+  // Greenhouse IDs are the POST param names — exact matches give a big score boost.
+  greenhouse: {
+    first_name:        [/^first_name$/i, /^first\.?name$/i],
+    last_name:         [/^last_name$/i,  /^last\.?name$/i],
+    email:             [/^email$/i],
+    phone:             [/^phone$/i],
+    resume_path:       [/^resume$/i],
+    cover_letter_path: [/^cover_letter$/i],
+    location:          [/^(candidate[_-]?)?location$/i],
+    linkedin_url:      [/linkedin/i],
+    work_authorization:[/work_?auth/i, /sponsorship/i],
+  },
+  // Workday uses data-automation-id starting with "formField-" and camelCase suffixes.
   workday: {
-    first_name: [/firstName/i, /legalName.*first/i, /candidateFirstName/i],
-    last_name: [/lastName/i, /legalName.*last/i, /candidateLastName/i],
-    email: [/candidateEmail/i, /emailAddress/i],
-    phone: [/phoneNumber/i, /phoneDevice/i],
-    resume_path: [/resume/i, /attachment/i],
-    cover_letter_path: [/coverLetter/i],
-    linkedin_url: [/linkedIn/i, /linkedin/i],
-    location: [/location/i, /addressLine/i],
+    first_name:        [/firstName/i, /legalName.*first/i, /candidateFirstName/i, /formField.*first/i],
+    last_name:         [/lastName/i, /legalName.*last/i, /candidateLastName/i, /formField.*last/i],
+    email:             [/candidateEmail/i, /emailAddress/i, /formField.*email/i],
+    phone:             [/phoneNumber/i, /phoneDevice/i, /formField.*phone/i],
+    resume_path:       [/resume/i, /attachment/i, /file-upload/i],
+    cover_letter_path: [/coverLetter/i, /cover.*letter/i],
+    linkedin_url:      [/linkedIn/i, /linkedin/i],
+    location:          [/location/i, /addressLine/i, /formField.*location/i],
+    work_authorization:[/workAuth/i, /authorization/i, /sponsorship/i],
+    salary_expectations:[/salary/i, /compensation/i],
   },
+  // Ashby uses _systemfield_* names in their API; DOM IDs vary but follow similar patterns.
   ashby: {
-    first_name: [/firstName/i, /firstname/i],
-    last_name: [/lastName/i, /lastname/i],
-    email: [/email/i],
-    phone: [/phone/i],
-    resume_path: [/resume/i],
+    first_name:        [/firstName/i, /firstname/i, /_systemfield_name/i],
+    last_name:         [/lastName/i, /lastname/i],
+    email:             [/email/i, /_systemfield_email/i],
+    phone:             [/phone/i, /_systemfield_phone/i],
+    resume_path:       [/resume/i, /_systemfield_resume/i],
     cover_letter_path: [/cover/i],
-    linkedin_url: [/linkedin/i],
+    linkedin_url:      [/linkedin/i, /_systemfield_linkedin/i],
+    location:          [/location/i, /_systemfield_location/i],
   },
-  greenhouse: {},
 };
 
 const NEGATIVE_PATTERNS: Partial<Record<SupportedFieldKey, RegExp[]>> = {

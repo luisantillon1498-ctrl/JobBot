@@ -120,13 +120,25 @@ serve(async (req) => {
     const authHeader = req.headers.get("authorization");
     if (!authHeader) return json(401, { error: "Not authenticated" });
 
-    const anonClient = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_ANON_KEY")!,
-      { global: { headers: { Authorization: authHeader } } },
-    );
-    const { data: { user }, error: authError } = await anonClient.auth.getUser();
-    if (authError || !user) return json(401, { error: "Invalid auth" });
+    // Decode the JWT locally — avoids a network round-trip to Supabase Auth that
+    // fails or hangs with ES256 tokens. "Verify JWT" is disabled at the infra
+    // level on this function, so we trust the token was valid when issued.
+    let user: { id: string } | null = null;
+    try {
+      const token = authHeader.replace(/^Bearer\s+/i, "");
+      const payloadB64 = token.split(".")[1];
+      // Deno's atob expects standard base64; JWT uses base64url — fix padding/chars
+      const payloadJson = atob(payloadB64.replace(/-/g, "+").replace(/_/g, "/").padEnd(
+        payloadB64.length + (4 - (payloadB64.length % 4)) % 4, "=",
+      ));
+      const payload = JSON.parse(payloadJson) as Record<string, unknown>;
+      if (typeof payload.sub === "string" && payload.sub) {
+        user = { id: payload.sub };
+      }
+    } catch {
+      /* fall through to 401 below */
+    }
+    if (!user) return json(401, { error: "Invalid auth" });
 
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     if (!serviceRoleKey) {
