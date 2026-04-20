@@ -100,6 +100,8 @@ serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   if (req.method !== "POST") return json(405, { error: "Method not allowed" });
 
+  console.log("[EF] invoked, method=POST");
+
   try {
     let clientApplicationIds: string[] | null = null;
     let resumeMode = false;
@@ -116,9 +118,10 @@ serve(async (req) => {
         /* ignore invalid JSON */
       }
     }
+    console.log("[EF] body parsed — resumeMode:", resumeMode, "explicit ids:", clientApplicationIds?.length ?? 0);
 
     const authHeader = req.headers.get("authorization");
-    if (!authHeader) return json(401, { error: "Not authenticated" });
+    if (!authHeader) { console.log("[EF] 401 no auth header"); return json(401, { error: "Not authenticated" }); }
 
     // Decode the JWT locally — avoids a network round-trip to Supabase Auth that
     // fails or hangs with ES256 tokens. "Verify JWT" is disabled at the infra
@@ -138,13 +141,16 @@ serve(async (req) => {
     } catch {
       /* fall through to 401 below */
     }
-    if (!user) return json(401, { error: "Invalid auth" });
+    if (!user) { console.log("[EF] 401 invalid JWT"); return json(401, { error: "Invalid auth" }); }
+    console.log("[EF] auth OK — user:", user.id);
 
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     if (!serviceRoleKey) {
+      console.log("[EF] 500 missing SUPABASE_SERVICE_ROLE_KEY");
       return json(500, { error: "Missing SUPABASE_SERVICE_ROLE_KEY secret for queue handoff." });
     }
     const runnerUrl = Deno.env.get("JOBPAL_AUTOMATION_RUNNER_URL")?.trim();
+    console.log("[EF] runnerUrl:", runnerUrl ?? "(not set)");
     if (!runnerUrl) {
       return json(500, { error: "Missing JOBPAL_AUTOMATION_RUNNER_URL secret for queue handoff." });
     }
@@ -206,6 +212,8 @@ serve(async (req) => {
       queue = fromDb.filter((row) => row.job_url);
     }
 
+    console.log("[EF] queue built — length:", queue.length, "apps:", queue.map((a) => a.id));
+
     if (queue.length === 0) {
       return json(200, {
         ok: true,
@@ -225,6 +233,7 @@ serve(async (req) => {
       )
       .eq("user_id", user.id)
       .single();
+    console.log("[EF] profile loaded — default_resume_document_id:", profile?.default_resume_document_id ?? "(none)");
 
     async function ensureCoverFromArtifact(args: {
       applicationId: string;
@@ -446,6 +455,7 @@ serve(async (req) => {
         }
       }
 
+      console.log(`[EF] app ${appId} — resumeDocId:`, resumeDocumentId ?? "(none)", "coverDocId before gen:", coverDocumentId ?? "(none)");
       if (!coverDocumentId) {
         const resumeForGeneration = resumeDocumentId
           ? await serviceClient
@@ -456,6 +466,7 @@ serve(async (req) => {
               .maybeSingle()
           : { data: null };
 
+        console.log(`[EF] app ${appId} — generating cover letter via Edge Function`);
         const generateRes = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/generate-cover-letter`, {
           method: "POST",
           headers: {
@@ -472,6 +483,7 @@ serve(async (req) => {
           }),
         });
 
+        console.log(`[EF] app ${appId} — cover letter gen response:`, generateRes.status);
         if (generateRes.ok) {
           const generatedArtifact = await serviceClient
             .from("generated_artifacts")
@@ -564,6 +576,7 @@ serve(async (req) => {
       };
 
       let runnerResponse: Response | null = null;
+      console.log(`[EF] calling runner for app ${appId} → POST ${runnerUrl}`);
       try {
         runnerResponse = await fetch(runnerUrl, {
           method: "POST",
@@ -574,8 +587,10 @@ serve(async (req) => {
           body: JSON.stringify(runnerPayload),
           signal: AbortSignal.timeout(RUNNER_TIMEOUT_MS),
         });
+        console.log(`[EF] runner responded — status: ${runnerResponse.status}`);
       } catch (error) {
         const reason = error instanceof Error ? error.message : "Runner call failed";
+        console.log(`[EF] runner fetch FAILED for app ${appId}:`, reason);
         await logState({
           appId,
           state: "waiting_for_human_action",
@@ -725,8 +740,8 @@ serve(async (req) => {
       outcomes,
     });
   } catch (error) {
-    return json(500, {
-      error: error instanceof Error ? error.message : "Unexpected error",
-    });
+    const msg = error instanceof Error ? error.message : "Unexpected error";
+    console.log("[EF] uncaught error:", msg, error);
+    return json(500, { error: msg });
   }
 });

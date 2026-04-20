@@ -54,6 +54,16 @@ async function resolveGreenhouseFormFrame(page: Page): Promise<Page> {
 export async function fillGreenhouseApplicationForm(page: Page, payload: ApplicantPayload): Promise<FillReport> {
   const formPage = await resolveGreenhouseFormFrame(page);
   await attemptResumeAutofill(formPage, payload.resume_path ?? "");
+
+  // Scroll to the bottom of the form so any lazy-rendered sections (e.g. EEO
+  // dropdowns at the bottom of the page) are fully in the DOM before we
+  // scan for field candidates.
+  await formPage.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
+  await formPage.waitForTimeout(600);
+  // Scroll back to top so the user sees the form from the start.
+  await formPage.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+  await formPage.waitForTimeout(300);
+
   return fillAtsApplicationForm(formPage, payload, "greenhouse");
 }
 

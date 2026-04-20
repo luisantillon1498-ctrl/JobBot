@@ -292,8 +292,7 @@ const NEGATIVE_PATTERNS: Partial<Record<SupportedFieldKey, RegExp[]>> = {
   full_name: [/\bfirst\b/i, /\blast\b/i, /\bfamily\b/i, /\bgiven\b/i, /\bpreferred\b/i],
   first_name: [/\blast name\b/i, /\bsurname\b/i],
   last_name: [/\bfirst name\b/i, /\bgiven name\b/i, /\bpreferred name\b/i],
-  // "search" penalises the intl-tel-input country-search helper inside phone widgets.
-  phone: [/\bfax\b/i, /\bsearch\b/i],
+  phone: [/\bfax\b/i],
   resume_path: [/\bcover letter\b/i],
   cover_letter_path: [/\bresume\b/i, /\bcv\b/i],
 };
