@@ -19,6 +19,8 @@ export type FillReport = {
     overwritten: boolean;
   }>;
   mappingPlan: FieldMappingPlan;
+  /** Required fields detected on the form that were not filled by the automation. */
+  unfilledRequired: Array<{ field: string; label: string; selector: string }>;
 };
 
 type FillAttemptResult = { matched: false } | { matched: true; selector: string; previousValue: string; overwritten: boolean };
@@ -55,6 +57,7 @@ type CandidateField = {
   contextText: string;
   dataAutomationId: string;
   title: string;
+  required: boolean;
 };
 
 type MappedField = {
@@ -381,7 +384,21 @@ async function extractFieldCandidates(page: Page): Promise<CandidateField[]> {
       const contextText = el.closest("fieldset, .field, .form-field, .question, [data-automation-id]")?.textContent ?? "";
 
       if (!id && !name) el.setAttribute("data-jobbot-idx", String(idx));
-      const selector = id ? `${tag}#${id}` : name ? `${tag}[name="${name}"]` : `${tag}[data-jobbot-idx="${idx}"]`;
+      // CSS IDs starting with a digit (e.g. UUIDs from Ashby) are invalid in CSS selectors.
+      // Use attribute selector form [id="..."] for any such ID to avoid SyntaxError.
+      const safeIdSelector = id
+        ? (/^\d/.test(id) ? `${tag}[id="${id.replace(/"/g, '\\"')}"]` : `${tag}#${id}`)
+        : null;
+      const selector = safeIdSelector ?? (name ? `${tag}[name="${name}"]` : `${tag}[data-jobbot-idx="${idx}"]`);
+
+      const computedLabelText = `${labelFromFor} ${wrappingLabel}`.trim();
+      // Detect required: native required attr, aria-required="true", or label contains asterisk
+      const isRequired =
+        (el as HTMLInputElement).required ||
+        el.getAttribute("aria-required") === "true" ||
+        computedLabelText.includes("*") ||
+        (contextText.match(/\*\s*(required)?/i) !== null &&
+          !contextText.match(/\*\s*(optional)/i));
 
       return {
         selector,
@@ -391,11 +408,12 @@ async function extractFieldCandidates(page: Page): Promise<CandidateField[]> {
         id,
         placeholder,
         ariaLabel,
-        labelText: `${labelFromFor} ${wrappingLabel}`.trim(),
+        labelText: computedLabelText,
         accept,
         contextText: contextText.slice(0, 280),
         dataAutomationId,
         title,
+        required: isRequired,
       };
     });
 
@@ -791,5 +809,29 @@ export async function fillAtsApplicationForm(page: Page, payload: ApplicantPaylo
   if (site === "ashby") {
     await fillAshbyCustomDropdowns(page, payload);
   }
-  return { applied, skippedEmpty, notFound, filesUploaded, fieldMappings, changeLog, mappingPlan };
+
+  // Detect required fields that were not filled by the automation.
+  // Only considers high-confidence mapped fields — if the form had a required field
+  // that was clearly identified but we couldn't fill it (no payload value or selector
+  // failed), surface it so the UI can warn the user.
+  const candidateBySelector = new Map<string, CandidateField>(
+    candidates.map((c) => [c.selector, c])
+  );
+  const unfilledRequired: Array<{ field: string; label: string; selector: string }> = [];
+  for (const mapped of mappingPlan.mapped) {
+    if (mapped.target in applied) continue; // successfully filled — skip
+    const candidate = candidateBySelector.get(mapped.selector);
+    if (candidate?.required) {
+      unfilledRequired.push({
+        field: mapped.target,
+        label: candidate.labelText || candidate.placeholder || mapped.target,
+        selector: mapped.selector,
+      });
+    }
+  }
+  if (unfilledRequired.length > 0) {
+    console.log("[fill] unfilledRequired:", unfilledRequired.map((u) => `${u.field}(${u.selector})`));
+  }
+
+  return { applied, skippedEmpty, notFound, filesUploaded, fieldMappings, changeLog, mappingPlan, unfilledRequired };
 }

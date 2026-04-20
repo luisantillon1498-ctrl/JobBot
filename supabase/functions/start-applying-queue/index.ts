@@ -32,6 +32,8 @@ type RunnerResult = {
   final_url?: string;
   artifacts?: Record<string, unknown>;
   unanswered_questions?: unknown[];
+  unfilled_fields?: unknown[];
+  unfilled_required?: unknown[];
   blocked_reason?: string;
   error?: string;
   /** noVNC live-view URL (self-hosted, replaces Steel live URL) */
@@ -641,7 +643,8 @@ serve(async (req) => {
     }) {
       const { appId, body } = args;
 
-      const unfilledFields = Array.isArray((body as any).unfilled_fields) ? (body as any).unfilled_fields : [];
+      const unfilledFields = Array.isArray(body.unfilled_fields) ? body.unfilled_fields : [];
+      const unfilledRequired = Array.isArray(body.unfilled_required) ? body.unfilled_required : [];
       const unanswered = Array.isArray(body.unanswered_questions) ? body.unanswered_questions : [];
       if (unanswered.length > 0) {
         const reason = "Unanswered eligibility question requires review";
@@ -705,6 +708,7 @@ serve(async (req) => {
           handoff_category: handoffCat,
           vnc_url: liveUrl,
           ...(finalState === "waiting_for_review" && unfilledFields.length > 0 ? { unfilled_fields: unfilledFields } : {}),
+          ...(finalState === "waiting_for_review" && unfilledRequired.length > 0 ? { unfilled_required: unfilledRequired } : {}),
         },
       });
 

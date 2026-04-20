@@ -310,10 +310,15 @@ async function readArtifacts(outputDir, runId, procResult) {
       details: issue.details ?? null,
     }));
 
+  const unfilledRequired = Array.isArray(runPayload?.fillReport?.unfilledRequired)
+    ? runPayload.fillReport.unfilledRequired
+    : [];
+
   const runnerBody = {
     ...result,
     final_url: meta.finalUrl ?? null,
     unfilled_fields: unfilledFields,
+    unfilled_required: unfilledRequired,
     artifacts: {
       run_id: runId,
       run_dir: latestRunDir,
