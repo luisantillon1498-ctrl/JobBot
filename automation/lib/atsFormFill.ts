@@ -227,7 +227,8 @@ const SITE_ID_BAG_EXTRA_SCORE: Partial<
 const NEGATIVE_PATTERNS: Partial<Record<SupportedFieldKey, RegExp[]>> = {
   first_name: [/\blast name\b/i, /\bsurname\b/i],
   last_name: [/\bfirst name\b/i, /\bgiven name\b/i, /\bpreferred name\b/i],
-  phone: [/\bfax\b/i],
+  // "search" penalises the intl-tel-input country-search helper inside phone widgets.
+  phone: [/\bfax\b/i, /\bsearch\b/i],
   resume_path: [/\bcover letter\b/i],
   cover_letter_path: [/\bresume\b/i, /\bcv\b/i],
 };
@@ -277,10 +278,12 @@ function scoreCandidate(site: AtsPlanSite, target: SupportedFieldKey, c: Candida
     score -= 3;
   }
 
-  if (target === "work_authorization" && (c.tag === "select" || c.inputType === "radio" || c.inputType === "checkbox")) {
+  // Type hints only sharpen the decision between already-matched candidates.
+  // Guard score > 0 prevents every bare text input from creating a false-positive tie.
+  if (score > 0 && target === "work_authorization" && (c.tag === "select" || c.inputType === "radio" || c.inputType === "checkbox")) {
     score += 1;
   }
-  if (target === "salary_expectations" && (c.inputType === "number" || c.inputType === "text")) {
+  if (score > 0 && target === "salary_expectations" && (c.inputType === "number" || c.inputType === "text")) {
     score += 1;
   }
 
@@ -443,10 +446,7 @@ export async function fillAtsApplicationForm(page: Page, payload: ApplicantPaylo
   const fieldMappings: Record<string, string> = {};
   const changeLog: FillReport["changeLog"] = [];
   const candidates = await extractFieldCandidates(page);
-  console.log(`[filler:${site}] Extracted ${candidates.length} field candidates:`, JSON.stringify(candidates.map(c => ({ selector: c.selector, label: c.labelText, name: c.name, id: c.id, placeholder: c.placeholder }))));
   const mappingPlan = buildMappingPlan(site, candidates, payload);
-  console.log(`[filler:${site}] Mapped ${mappingPlan.mapped.length} fields:`, JSON.stringify(mappingPlan.mapped.map(m => ({ target: m.target, selector: m.selector, confidence: m.confidence, score: m.matchedBy }))));
-  console.log(`[filler:${site}] Issues:`, JSON.stringify(mappingPlan.issues.map(i => ({ target: i.target, reason: i.reason }))));
   const mappedByTarget = new Map<SupportedFieldKey, MappedField>(mappingPlan.mapped.map((m) => [m.target, m]));
 
   for (const target of ORDERED_TARGETS) {
