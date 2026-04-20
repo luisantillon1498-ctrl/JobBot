@@ -221,7 +221,7 @@ serve(async (req) => {
     const { data: profile } = await serviceClient
       .from("profiles")
       .select(
-        "first_name, middle_name, last_name, professional_email, phone, linkedin_url, city, state_region, country, veteran_status, disability_status, default_resume_document_id",
+        "first_name, middle_name, last_name, professional_email, phone, linkedin_url, city, state_region, country, veteran_status, disability_status, gender, hispanic_ethnicity, default_resume_document_id",
       )
       .eq("user_id", user.id)
       .single();
@@ -542,6 +542,9 @@ serve(async (req) => {
           location: [profile?.city, profile?.state_region, profile?.country].filter(Boolean).join(", ") || null,
           veteran_status: profile?.veteran_status ?? null,
           disability_status: profile?.disability_status ?? null,
+          gender: profile?.gender ?? null,
+          hispanic_ethnicity: profile?.hispanic_ethnicity ?? null,
+          country: profile?.country ?? null,
         },
         documents: {
           resume: resumeDoc
@@ -621,6 +624,7 @@ serve(async (req) => {
     }) {
       const { appId, body } = args;
 
+      const unfilledFields = Array.isArray((body as any).unfilled_fields) ? (body as any).unfilled_fields : [];
       const unanswered = Array.isArray(body.unanswered_questions) ? body.unanswered_questions : [];
       if (unanswered.length > 0) {
         const reason = "Unanswered eligibility question requires review";
@@ -683,6 +687,7 @@ serve(async (req) => {
           hard_blocker: body.hard_blocker === true,
           handoff_category: handoffCat,
           vnc_url: liveUrl,
+          ...(finalState === "waiting_for_review" && unfilledFields.length > 0 ? { unfilled_fields: unfilledFields } : {}),
         },
       });
 

@@ -53,8 +53,22 @@ const DISABILITY_STATUS_OPTIONS = [
   { value: "has_disability", label: "Yes, I have a disability" },
   { value: "decline_to_answer", label: "I prefer not to answer" },
 ] as const;
+const GENDER_OPTIONS = [
+  { value: "prefer_not_to_say", label: "Prefer not to say" },
+  { value: "man", label: "Man" },
+  { value: "woman", label: "Woman" },
+  { value: "non_binary", label: "Non-binary" },
+  { value: "other", label: "Other" },
+] as const;
+const HISPANIC_ETHNICITY_OPTIONS = [
+  { value: "prefer_not_to_say", label: "Prefer not to say" },
+  { value: "yes", label: "Yes, Hispanic or Latino" },
+  { value: "no", label: "No, not Hispanic or Latino" },
+] as const;
 type VeteranStatus = (typeof VETERAN_STATUS_OPTIONS)[number]["value"];
 type DisabilityStatus = (typeof DISABILITY_STATUS_OPTIONS)[number]["value"];
+type Gender = (typeof GENDER_OPTIONS)[number]["value"];
+type HispanicEthnicity = (typeof HISPANIC_ETHNICITY_OPTIONS)[number]["value"];
 
 export default function Settings() {
   const { user, signOut } = useAuth();
@@ -77,6 +91,8 @@ export default function Settings() {
   const [dateOfBirth, setDateOfBirth] = useState("");
   const [veteranStatus, setVeteranStatus] = useState<VeteranStatus>("not_specified");
   const [disabilityStatus, setDisabilityStatus] = useState<DisabilityStatus>("not_specified");
+  const [gender, setGender] = useState<Gender>("prefer_not_to_say");
+  const [hispanicEthnicity, setHispanicEthnicity] = useState<HispanicEthnicity>("prefer_not_to_say");
   const [coverLetterTone, setCoverLetterTone] = useState<CoverLetterTone>(DEFAULT_COVER_LETTER_TONE);
   const [supportsCoverLetterTone, setSupportsCoverLetterTone] = useState(true);
   const [profileLoading, setProfileLoading] = useState(true);
@@ -141,6 +157,16 @@ export default function Settings() {
           ? (data.disability_status as DisabilityStatus)
           : "not_specified",
       );
+      setGender(
+        GENDER_OPTIONS.some((o) => o.value === (data as Record<string, unknown>).gender)
+          ? ((data as Record<string, unknown>).gender as Gender)
+          : "prefer_not_to_say",
+      );
+      setHispanicEthnicity(
+        HISPANIC_ETHNICITY_OPTIONS.some((o) => o.value === (data as Record<string, unknown>).hispanic_ethnicity)
+          ? ((data as Record<string, unknown>).hispanic_ethnicity as HispanicEthnicity)
+          : "prefer_not_to_say",
+      );
       if ("cover_letter_tone" in data) {
         setSupportsCoverLetterTone(true);
         const tone = isCoverLetterTone(data.cover_letter_tone) ? data.cover_letter_tone : DEFAULT_COVER_LETTER_TONE;
@@ -204,6 +230,8 @@ export default function Settings() {
         date_of_birth: dateOfBirth || null,
         veteran_status: veteranStatus,
         disability_status: disabilityStatus,
+        gender: gender,
+        hispanic_ethnicity: hispanicEthnicity,
       })
       .eq("user_id", user.id);
 
@@ -480,6 +508,41 @@ export default function Settings() {
                         </SelectTrigger>
                         <SelectContent>
                           {DISABILITY_STATUS_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="settings-gender">Gender</Label>
+                      <Select value={gender} onValueChange={(v) => setGender(v as Gender)}>
+                        <SelectTrigger id="settings-gender">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {GENDER_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="settings-hispanic-ethnicity">Hispanic or Latino ethnicity</Label>
+                      <Select
+                        value={hispanicEthnicity}
+                        onValueChange={(v) => setHispanicEthnicity(v as HispanicEthnicity)}
+                      >
+                        <SelectTrigger id="settings-hispanic-ethnicity">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {HISPANIC_ETHNICITY_OPTIONS.map((option) => (
                             <SelectItem key={option.value} value={option.value}>
                               {option.label}
                             </SelectItem>

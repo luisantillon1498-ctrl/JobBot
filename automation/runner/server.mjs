@@ -301,9 +301,19 @@ async function readArtifacts(outputDir, runId, procResult) {
     result.unanswered_questions = unansweredQuestions;
   }
 
+  // Collect fields the bot found on the form but had no profile data for
+  const unfilledFields = (runPayload?.fillReport?.mappingPlan?.issues ?? [])
+    .filter((issue) => issue.reason === "missing_payload" || issue.reason === "not_found")
+    .map((issue) => ({
+      field: issue.target,
+      reason: issue.reason,
+      details: issue.details ?? null,
+    }));
+
   const runnerBody = {
     ...result,
     final_url: meta.finalUrl ?? null,
+    unfilled_fields: unfilledFields,
     artifacts: {
       run_id: runId,
       run_dir: latestRunDir,
