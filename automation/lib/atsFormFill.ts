@@ -24,6 +24,7 @@ export type FillReport = {
 type FillAttemptResult = { matched: false } | { matched: true; selector: string; previousValue: string; overwritten: boolean };
 
 export type SupportedFieldKey =
+  | "full_name"
   | "first_name"
   | "last_name"
   | "email"
@@ -36,6 +37,7 @@ export type SupportedFieldKey =
   | "salary_expectations"
   | "gender"
   | "hispanic_ethnicity"
+  | "race_ethnicity"
   | "country";
 
 type CandidateField = {
@@ -88,6 +90,7 @@ export type FieldMappingPlan = {
 };
 
 const ORDERED_TARGETS: SupportedFieldKey[] = [
+  "full_name",
   "first_name",
   "last_name",
   "email",
@@ -100,10 +103,14 @@ const ORDERED_TARGETS: SupportedFieldKey[] = [
   "salary_expectations",
   "gender",
   "hispanic_ethnicity",
+  "race_ethnicity",
   "country",
 ];
 
 const BASE_FIELD_PATTERNS: Record<SupportedFieldKey, RegExp[]> = {
+  full_name: [
+    /\bfull name\b/i, /\byour name\b/i, /\bname\b/i,
+  ],
   first_name: [
     /\blegal first name\b/i, /\bfirst name\b/i, /\bgiven name\b/i,
     /\bforename\b/i, /\bpreferred name\b/i, /\bfirst\b/i,
@@ -155,6 +162,10 @@ const BASE_FIELD_PATTERNS: Record<SupportedFieldKey, RegExp[]> = {
     /\bhispanic\b/i, /\blatino\b/i, /\blatina\b/i,
     /\bare you hispanic\b/i, /\bhispanic.*latino\b/i,
   ],
+  race_ethnicity: [
+    /\brace\b/i, /\bethnicity\b/i, /\brace.*ethnicity\b/i,
+    /\bethnic.*background\b/i, /\brace\/ethnicity\b/i,
+  ],
   country: [
     /\bcountry\b/i, /\bcountry of residence\b/i,
     /\bcountry where you live\b/i, /\bwhere do you (live|reside)\b/i,
@@ -188,6 +199,7 @@ const SITE_FIELD_PATTERN_EXTRA: Record<AtsPlanSite, Partial<Record<SupportedFiel
     salary_expectations:[/\bsalary\b/i, /\bcompensation\b/i],
   },
   ashby: {
+    full_name:        [/\bfull name\b/i, /\byour name\b/i, /\bname\b/i],
     first_name:       [/\blegal first name\b/i, /\bfirst name\b/i],
     last_name:        [/\blegal last name\b/i, /\blast name\b/i],
     email:            [/\bemail address\b/i, /\bemail\b/i],
@@ -197,6 +209,7 @@ const SITE_FIELD_PATTERN_EXTRA: Record<AtsPlanSite, Partial<Record<SupportedFiel
     cover_letter_path:[/\bcover letter file\b/i, /\bcover letter\b/i],
     location:         [/\blocation\b/i, /\bcity\b/i],
     work_authorization:[/\bwork authorization\b/i, /\bauthorized\b/i],
+    race_ethnicity:   [/\brace\b/i, /\bethnicity\b/i],
   },
 };
 
@@ -218,6 +231,7 @@ const SITE_ID_BAG_EXTRA_SCORE: Partial<
     disability_status:  [/^disability_status$/i, /disability/i],
     gender:             [/^gender$/i],
     hispanic_ethnicity: [/^hispanic_ethnicity$/i, /^hispanic$/i],
+    race_ethnicity:     [/^race$/i, /race_ethnicity/i],
     country:            [/^country$/i],
   },
   // Workday uses data-automation-id starting with "formField-" and camelCase suffixes.
@@ -235,7 +249,8 @@ const SITE_ID_BAG_EXTRA_SCORE: Partial<
   },
   // Ashby uses _systemfield_* names in their API; DOM IDs vary but follow similar patterns.
   ashby: {
-    first_name:        [/firstName/i, /firstname/i, /_systemfield_name/i],
+    full_name:         [/_systemfield_name/i, /^name$/i],
+    first_name:        [/firstName/i, /firstname/i],
     last_name:         [/lastName/i, /lastname/i],
     email:             [/email/i, /_systemfield_email/i],
     phone:             [/phone/i, /_systemfield_phone/i],
@@ -243,10 +258,12 @@ const SITE_ID_BAG_EXTRA_SCORE: Partial<
     cover_letter_path: [/cover/i],
     linkedin_url:      [/linkedin/i, /_systemfield_linkedin/i],
     location:          [/location/i, /_systemfield_location/i],
+    race_ethnicity:    [/_systemfield_race/i, /race/i],
   },
 };
 
 const NEGATIVE_PATTERNS: Partial<Record<SupportedFieldKey, RegExp[]>> = {
+  full_name: [/\bfirst\b/i, /\blast\b/i, /\bfamily\b/i, /\bgiven\b/i, /\bpreferred\b/i],
   first_name: [/\blast name\b/i, /\bsurname\b/i],
   last_name: [/\bfirst name\b/i, /\bgiven name\b/i, /\bpreferred name\b/i],
   // "search" penalises the intl-tel-input country-search helper inside phone widgets.
@@ -302,10 +319,13 @@ function scoreCandidate(site: AtsPlanSite, target: SupportedFieldKey, c: Candida
 
   // Type hints only sharpen the decision between already-matched candidates.
   // Guard score > 0 prevents every bare text input from creating a false-positive tie.
-  if (score > 0 && target === "work_authorization" && (c.tag === "select" || c.inputType === "radio" || c.inputType === "checkbox")) {
+  if (score > 0 && target === "work_authorization" && (c.tag === "select" || c.inputType === "radio" || c.inputType === "radio_group" || c.inputType === "checkbox")) {
     score += 1;
   }
   if (score > 0 && target === "salary_expectations" && (c.inputType === "number" || c.inputType === "text")) {
+    score += 1;
+  }
+  if (score > 0 && target === "race_ethnicity" && (c.tag === "select" || c.inputType === "radio_group")) {
     score += 1;
   }
 
@@ -315,7 +335,7 @@ function scoreCandidate(site: AtsPlanSite, target: SupportedFieldKey, c: Candida
 async function extractFieldCandidates(page: Page): Promise<CandidateField[]> {
   return page.evaluate(() => {
     const controls = Array.from(document.querySelectorAll("input, textarea, select"));
-    return controls.map((el, idx) => {
+    const mapped = controls.map((el, idx) => {
       const tag = el.tagName.toLowerCase();
       const input = el as HTMLInputElement;
       const inputType = tag === "input" ? (input.type || "text").toLowerCase() : tag;
@@ -326,7 +346,8 @@ async function extractFieldCandidates(page: Page): Promise<CandidateField[]> {
       const title = el.getAttribute("title") ?? "";
       const placeholder = (el as HTMLInputElement).placeholder ?? "";
       const accept = input.accept ?? "";
-      const labelFromFor = id ? document.querySelector(`label[for="${CSS.escape(id)}"]`)?.textContent ?? "" : "";
+      const escapedId = id.replace(/"/g, '\\"');
+      const labelFromFor = id ? (document.querySelector('label[for="' + escapedId + '"]')?.textContent ?? "") : "";
       const wrappingLabel = el.closest("label")?.textContent ?? "";
       const contextText = el.closest("fieldset, .field, .form-field, .question, [data-automation-id]")?.textContent ?? "";
 
@@ -348,10 +369,39 @@ async function extractFieldCandidates(page: Page): Promise<CandidateField[]> {
         title,
       };
     });
+
+    // Deduplicate radio groups — keep only the first radio of each name group,
+    // collecting all sibling option labels into contextText.
+    const seenRadioNames = new Set<string>();
+    const result: typeof mapped = [];
+    for (const field of mapped) {
+      if (field.inputType === "radio") {
+        if (!field.name || seenRadioNames.has(field.name)) continue;
+        seenRadioNames.add(field.name);
+        // Collect all option labels for this group
+        const escapedName = field.name.replace(/"/g, '\\"');
+        const groupOptions = Array.from(
+          document.querySelectorAll('input[type="radio"][name="' + escapedName + '"]')
+        ).map((r) => {
+          const rid = (r as HTMLInputElement).id;
+          const escapedRid = rid.replace(/"/g, '\\"');
+          const labelFor = rid ? (document.querySelector('label[for="' + escapedRid + '"]')?.textContent ?? "") : "";
+          const wrap = r.closest("label")?.textContent ?? "";
+          return (labelFor || wrap).trim();
+        }).filter(Boolean);
+        field.inputType = "radio_group";
+        field.contextText = (field.contextText + " Options: " + groupOptions.join(", ")).slice(0, 280);
+      }
+      result.push(field);
+    }
+    return result;
   });
 }
 
 function payloadValueForTarget(payload: ApplicantPayload, target: SupportedFieldKey): string | undefined {
+  if (target === "full_name") {
+    return [payload.first_name, payload.last_name].filter(Boolean).join(" ") || payload.full_name;
+  }
   return payload[target];
 }
 
@@ -450,9 +500,45 @@ async function fillWithPlan(page: Page, mapped: MappedField, value: string): Pro
     if (!fs.existsSync(value)) return { matched: false };
     await loc.setInputFiles(value);
   } else {
-    // Check the element tag to decide how to fill
+    // Check the element tag and input type to decide how to fill
     const tagName = await loc.evaluate((el) => el.tagName.toLowerCase()).catch(() => "input");
-    if (tagName === "select") {
+    const rawInputType = await loc.evaluate((el) => {
+      if (el.tagName.toLowerCase() === "input") return (el as HTMLInputElement).type.toLowerCase();
+      return "";
+    }).catch(() => "");
+
+    if (rawInputType === "radio") {
+      // Radio group — find and click the radio whose label matches the value
+      const radioName = await loc.evaluate((el) => el.getAttribute("name") ?? "").catch(() => "");
+      if (radioName) {
+        const clicked = await page.evaluate(({ name, val }) => {
+          const escaped = name.replace(/"/g, '\\"');
+          const radios = Array.from(
+            document.querySelectorAll('input[type="radio"][name="' + escaped + '"]')
+          ) as HTMLInputElement[];
+          const lower = val.toLowerCase();
+          for (const radio of radios) {
+            const rid = radio.id;
+            const escapedRid = rid.replace(/"/g, '\\"');
+            const labelFor = rid
+              ? (document.querySelector('label[for="' + escapedRid + '"]')?.textContent ?? "")
+              : "";
+            const wrap = radio.closest("label")?.textContent ?? "";
+            const optionText = (labelFor || wrap).trim().toLowerCase();
+            if (optionText && (optionText.includes(lower) || lower.includes(optionText))) {
+              radio.click();
+              radio.dispatchEvent(new Event("change", { bubbles: true }));
+              return true;
+            }
+          }
+          return false;
+        }, { name: radioName, val: value }).catch(() => false);
+        if (!clicked) {
+          // Playwright fallback — try clicking by visible text near a radio
+          await page.locator(`input[type="radio"][name="${radioName}"]`).first().click().catch(() => {});
+        }
+      }
+    } else if (tagName === "select") {
       // Try exact value match first, then case-insensitive label match
       const filled = await loc.evaluate((el, val) => {
         const select = el as HTMLSelectElement;
@@ -483,6 +569,67 @@ async function fillWithPlan(page: Page, mapped: MappedField, value: string): Pro
   }
 
   return { matched: true, selector: mapped.selector, previousValue, overwritten };
+}
+
+async function fillAshbyCustomDropdowns(page: Page, payload: ApplicantPayload): Promise<void> {
+  // Map of field names to search for in labels → payload value
+  const eeoFields: Array<{ labelPattern: RegExp; value: string | undefined }> = [
+    { labelPattern: /\bgender\b/i, value: payload.gender },
+    { labelPattern: /\brace\b|\bethnicity\b/i, value: payload.race_ethnicity },
+    { labelPattern: /\bhispanic\b|\blatino\b/i, value: payload.hispanic_ethnicity },
+    { labelPattern: /\bveteran\b/i, value: payload.veteran_status },
+    { labelPattern: /\bdisabilit/i, value: payload.disability_status },
+  ];
+
+  for (const { labelPattern, value } of eeoFields) {
+    if (!value) continue;
+    try {
+      // Find a label matching this field
+      const labelEls = await page.locator("label, legend, [class*=\"label\"], [class*=\"Label\"]").all();
+      let triggerEl: any = null;
+
+      for (const labelEl of labelEls) {
+        const text = await labelEl.textContent().catch(() => "");
+        if (!text || !labelPattern.test(text)) continue;
+
+        // Look for a combobox/listbox trigger near this label
+        const parent = labelEl.locator("xpath=..");
+        const trigger = parent.locator("[role=\"combobox\"], [aria-haspopup], button[aria-expanded]").first();
+        if ((await trigger.count()) > 0) {
+          triggerEl = trigger;
+          break;
+        }
+        // Try siblings/nearby divs with dropdown characteristics
+        const nearbyTrigger = page.locator("[data-testid*=\"select\"], [class*=\"Select\"], [class*=\"dropdown\"]").first();
+        if ((await nearbyTrigger.count()) > 0) {
+          triggerEl = nearbyTrigger;
+          break;
+        }
+      }
+
+      if (!triggerEl) continue;
+
+      await triggerEl.click({ timeout: 3000 }).catch(() => {});
+      await page.waitForTimeout(300);
+
+      // Find matching option
+      const lower = value.toLowerCase();
+      const options = await page.locator("[role=\"option\"], [role=\"listbox\"] li, [role=\"menu\"] [role=\"menuitem\"]").all();
+      for (const opt of options) {
+        const optText = await opt.textContent().catch(() => "");
+        if (!optText) continue;
+        const optLower = optText.trim().toLowerCase();
+        if (optLower.includes(lower) || lower.includes(optLower)) {
+          await opt.click({ timeout: 3000 }).catch(() => {});
+          break;
+        }
+      }
+
+      await page.waitForTimeout(200);
+    } catch {
+      // Non-fatal: custom dropdown filling is best-effort
+    }
+  }
 }
 
 /**
@@ -533,5 +680,8 @@ export async function fillAtsApplicationForm(page: Page, payload: ApplicantPaylo
     });
   }
 
+  if (site === "ashby") {
+    await fillAshbyCustomDropdowns(page, payload);
+  }
   return { applied, skippedEmpty, notFound, filesUploaded, fieldMappings, changeLog, mappingPlan };
 }

@@ -65,10 +65,22 @@ const HISPANIC_ETHNICITY_OPTIONS = [
   { value: "yes", label: "Yes, Hispanic or Latino" },
   { value: "no", label: "No, not Hispanic or Latino" },
 ] as const;
+const RACE_ETHNICITY_OPTIONS = [
+  { value: "prefer_not_to_say", label: "Prefer not to say" },
+  { value: "american_indian_alaska_native", label: "American Indian or Alaska Native" },
+  { value: "asian", label: "Asian" },
+  { value: "black_african_american", label: "Black or African American" },
+  { value: "hispanic_latino", label: "Hispanic or Latino" },
+  { value: "native_hawaiian_pacific_islander", label: "Native Hawaiian or Other Pacific Islander" },
+  { value: "white", label: "White" },
+  { value: "two_or_more", label: "Two or more races" },
+  { value: "decline_to_answer", label: "Decline to answer" },
+] as const;
 type VeteranStatus = (typeof VETERAN_STATUS_OPTIONS)[number]["value"];
 type DisabilityStatus = (typeof DISABILITY_STATUS_OPTIONS)[number]["value"];
 type Gender = (typeof GENDER_OPTIONS)[number]["value"];
 type HispanicEthnicity = (typeof HISPANIC_ETHNICITY_OPTIONS)[number]["value"];
+type RaceEthnicity = (typeof RACE_ETHNICITY_OPTIONS)[number]["value"];
 
 export default function Settings() {
   const { user, signOut } = useAuth();
@@ -93,6 +105,7 @@ export default function Settings() {
   const [disabilityStatus, setDisabilityStatus] = useState<DisabilityStatus>("not_specified");
   const [gender, setGender] = useState<Gender>("prefer_not_to_say");
   const [hispanicEthnicity, setHispanicEthnicity] = useState<HispanicEthnicity>("prefer_not_to_say");
+  const [raceEthnicity, setRaceEthnicity] = useState<RaceEthnicity>("prefer_not_to_say");
   const [coverLetterTone, setCoverLetterTone] = useState<CoverLetterTone>(DEFAULT_COVER_LETTER_TONE);
   const [supportsCoverLetterTone, setSupportsCoverLetterTone] = useState(true);
   const [profileLoading, setProfileLoading] = useState(true);
@@ -167,6 +180,11 @@ export default function Settings() {
           ? ((data as Record<string, unknown>).hispanic_ethnicity as HispanicEthnicity)
           : "prefer_not_to_say",
       );
+      setRaceEthnicity(
+        RACE_ETHNICITY_OPTIONS.some((o) => o.value === (data as Record<string, unknown>).race_ethnicity)
+          ? ((data as Record<string, unknown>).race_ethnicity as RaceEthnicity)
+          : "prefer_not_to_say",
+      );
       if ("cover_letter_tone" in data) {
         setSupportsCoverLetterTone(true);
         const tone = isCoverLetterTone(data.cover_letter_tone) ? data.cover_letter_tone : DEFAULT_COVER_LETTER_TONE;
@@ -232,7 +250,9 @@ export default function Settings() {
         disability_status: disabilityStatus,
         gender: gender,
         hispanic_ethnicity: hispanicEthnicity,
-      })
+        // race_ethnicity column added by migration 20260420120000_add_race_ethnicity_to_profiles.sql
+        race_ethnicity: raceEthnicity,
+      } as any)
       .eq("user_id", user.id);
 
     setSavingProfile(false);
@@ -550,6 +570,24 @@ export default function Settings() {
                         </SelectContent>
                       </Select>
                     </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="settings-race-ethnicity">Race / Ethnicity</Label>
+                    <Select
+                      value={raceEthnicity}
+                      onValueChange={(v) => setRaceEthnicity(v as RaceEthnicity)}
+                    >
+                      <SelectTrigger id="settings-race-ethnicity">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {RACE_ETHNICITY_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                   <Button type="submit" disabled={savingProfile}>
                     {savingProfile ? "Saving…" : "Save profile"}

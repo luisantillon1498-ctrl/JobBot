@@ -221,7 +221,7 @@ serve(async (req) => {
     const { data: profile } = await serviceClient
       .from("profiles")
       .select(
-        "first_name, middle_name, last_name, professional_email, phone, linkedin_url, city, state_region, country, veteran_status, disability_status, gender, hispanic_ethnicity, default_resume_document_id",
+        "first_name, middle_name, last_name, professional_email, phone, linkedin_url, city, state_region, country, veteran_status, disability_status, gender, hispanic_ethnicity, race_ethnicity, default_resume_document_id",
       )
       .eq("user_id", user.id)
       .single();
@@ -544,6 +544,8 @@ serve(async (req) => {
           disability_status: profile?.disability_status ?? null,
           gender: profile?.gender ?? null,
           hispanic_ethnicity: profile?.hispanic_ethnicity ?? null,
+          race_ethnicity: (profile as any)?.race_ethnicity ?? null,
+          full_name: [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") || null,
           country: profile?.country ?? null,
         },
         documents: {

@@ -77,6 +77,7 @@ export function payloadFromEnv(): ApplicantPayload {
     disability_status: process.env.JOBPAL_DISABILITY_STATUS?.trim() || undefined,
     gender: process.env.JOBPAL_GENDER?.trim() || undefined,
     hispanic_ethnicity: process.env.JOBPAL_HISPANIC_ETHNICITY?.trim() || undefined,
+    race_ethnicity: process.env.JOBPAL_RACE_ETHNICITY?.trim() || undefined,
     country: process.env.JOBPAL_COUNTRY?.trim() || undefined,
     resume_path: process.env.JOBPAL_RESUME_PATH ?? undefined,
     cover_letter_path: process.env.JOBPAL_COVER_LETTER_PATH ?? undefined,

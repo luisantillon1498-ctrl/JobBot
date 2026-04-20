@@ -403,6 +403,8 @@ async function runAutomation(payload) {
     JOBPAL_DISABILITY_STATUS: String(payload?.applicant?.disability_status ?? ""),
     JOBPAL_GENDER: String(payload?.applicant?.gender ?? ""),
     JOBPAL_HISPANIC_ETHNICITY: String(payload?.applicant?.hispanic_ethnicity ?? ""),
+    JOBPAL_RACE_ETHNICITY: String(payload?.applicant?.race_ethnicity ?? ""),
+    JOBPAL_FULL_NAME: [payload?.applicant?.first_name, payload?.applicant?.last_name].filter(Boolean).join(" ") || "",
     JOBPAL_COUNTRY: String(payload?.applicant?.country ?? ""),
     JOBPAL_RESUME_PATH: resumePath,
     JOBPAL_COVER_LETTER_PATH: coverPath,

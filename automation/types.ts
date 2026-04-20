@@ -17,6 +17,8 @@ export type RunStatus =
   | { kind: "error"; message: string };
 
 export type ApplicantPayload = {
+  /** Computed from first_name + last_name; optional since it is derived */
+  full_name?: string;
   first_name?: string;
   middle_name?: string;
   preferred_name?: string;
@@ -31,6 +33,7 @@ export type ApplicantPayload = {
   disability_status?: string;
   gender?: string;
   hispanic_ethnicity?: string;
+  race_ethnicity?: string;
   country?: string;
   /** Local file path for resume upload when the board exposes a file input */
   resume_path?: string;
