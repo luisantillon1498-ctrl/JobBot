@@ -10,6 +10,8 @@ export type RunStatus =
       readyForUserReview: boolean;
       message?: string;
     }
+  /** Spec auto-detected a submission confirmation page/message in the live browser. */
+  | { kind: "submitted"; submitted: true; message?: string }
   /** Runner cannot continue until the user completes verification in a live browser (see human-handoff artifact). */
   | { kind: "waiting_for_human_action"; detail: string }
   | { kind: "error"; message: string };

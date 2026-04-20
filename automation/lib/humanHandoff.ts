@@ -72,6 +72,92 @@ export async function waitForResumeSignal(
   return false;
 }
 
+// ─── Submission auto-detection ────────────────────────────────────────────────
+
+/** URL fragments that reliably indicate a successful ATS submission. */
+const SUBMISSION_URL_PATTERNS: RegExp[] = [
+  /[?&]success=true/i,               // Greenhouse: appends ?success=true
+  /\/confirmation/i,                  // Workday, Taleo
+  /\/thank[-_]?you/i,
+  /\/success/i,
+  /\/submitted/i,
+  /\/application[-_]?complete/i,
+  /\/applied/i,
+];
+
+/** Body-text phrases shown on ATS confirmation pages after submit. */
+const SUBMISSION_TEXT_PATTERNS: RegExp[] = [
+  /your application has been (submitted|received|sent)/i,
+  /thank you for (applying|submitting|your application)/i,
+  /application (received|submitted|complete|confirmed|on its way)/i,
+  /we['']?ve received your application/i,
+  /successfully (submitted|applied)/i,
+  /your application is (complete|confirmed)/i,
+  /you['']?ve applied/i,
+  /application complete/i,
+];
+
+/**
+ * Races two conditions while the browser is open for user review:
+ *   1. Auto-detection: polls the live page every 2 s for submission confirmation
+ *      (URL pattern or confirmation text). On detection, updates meta.json with
+ *      kind:"submitted" and writes the done-signal itself.
+ *   2. Manual resume: waits for the server to write the done-signal file (user
+ *      clicked "Resume Automation").
+ *
+ * Returns { autoSubmitted: true } when submission was auto-detected, or
+ * { autoSubmitted: false } when the user resumed manually (or timeout hit).
+ */
+export async function waitForSubmissionOrResume(
+  page: Page,
+  doneSignalFile: string,
+  timeoutMs: number,
+  onAutoSubmit: () => Promise<void>,
+): Promise<{ autoSubmitted: boolean }> {
+  let autoSubmitted = false;
+  let cancelled = false;
+
+  const detectionLoop = (async () => {
+    const deadline = Date.now() + timeoutMs;
+    while (!cancelled && Date.now() < deadline) {
+      try {
+        // Check URL first (cheap, no evaluate needed)
+        const currentUrl = page.url();
+        const urlMatch = SUBMISSION_URL_PATTERNS.some((p) => p.test(currentUrl));
+
+        let textMatch = false;
+        if (!urlMatch) {
+          const bodyText: string = await page
+            .evaluate(() => (document.body?.innerText ?? "").slice(0, 8000))
+            .catch(() => "");
+          textMatch = SUBMISSION_TEXT_PATTERNS.some((p) => p.test(bodyText));
+        }
+
+        if (urlMatch || textMatch) {
+          autoSubmitted = true;
+          console.log(`[spec] Submission detected (${urlMatch ? "url" : "text"}). Auto-marking as submitted.`);
+          await onAutoSubmit();
+          // Write the done-signal so the resume-poller unblocks and we exit cleanly.
+          await fs.writeFile(doneSignalFile, "done").catch(() => {});
+          return;
+        }
+      } catch {
+        // Page may be mid-navigation — ignore and retry
+      }
+      // Poll every 2 seconds
+      await new Promise<void>((r) => setTimeout(r, 2000));
+    }
+  })();
+
+  // Also wait for the server-written done-signal (user clicked Resume manually)
+  const manualResume = waitForResumeSignal(doneSignalFile, timeoutMs);
+
+  await Promise.race([detectionLoop, manualResume]);
+  cancelled = true;
+
+  return { autoSubmitted };
+}
+
 /**
  * Polls the page until verification widgets/text are gone, or the optional
  * signal file appears (then unlinks it).  Used in local-dev / headless fallback.

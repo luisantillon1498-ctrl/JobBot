@@ -11,6 +11,7 @@ import {
   humanChallengeTimeoutMs,
   saveHumanHandoffArtifacts,
   waitForResumeSignal,
+  waitForSubmissionOrResume,
   waitUntilHumanChallengeCleared,
 } from "./lib/humanHandoff";
 import { detectHumanChallenge } from "./lib/humanChallenge";
@@ -319,17 +320,46 @@ test.describe("Application form automation", () => {
 
       // ── Keep the browser open for user review ──────────────────────────────
       // Write the same paused-file used for CAPTCHA handoffs so the runner keeps
-      // the VNC session alive and returns the live URL to the UI. The user reviews
-      // the filled form in the browser frame, submits if satisfied, then clicks
-      // "Resume Automation" to close the session.
+      // the VNC session alive and returns the live URL to the UI.
+      //
+      // While waiting we also poll the page for submission confirmation signals
+      // (URL change, "Thank you for applying" text, etc.).  If detected, we
+      // auto-update meta.json to kind:"submitted" so the runner marks the
+      // application as submitted in the DB — no manual step needed on the user's
+      // part.  If the user clicks Resume without submitting, meta.json stays as
+      // kind:"filled" and the app moves to "waiting_for_review".
       const reviewPausedPath = pausedFilePath();
       const reviewDoneSignal = humanActionDoneSignalPath();
       if (reviewPausedPath && reviewDoneSignal) {
         await fs.writeFile(reviewPausedPath, "paused");
-        console.log("[spec] Form filled — waiting for user to review and resume.");
-        await waitForResumeSignal(reviewDoneSignal, humanChallengeTimeoutMs());
-        // Whether or not the timeout fires, meta.json already records kind:"filled".
-        // The runner will map that to waiting_for_review and clear the live URL.
+        console.log("[spec] Form filled — watching for submission and waiting for resume.");
+
+        const { autoSubmitted } = await waitForSubmissionOrResume(
+          activePage,
+          reviewDoneSignal,
+          humanChallengeTimeoutMs(),
+          async () => {
+            // Called when submission is auto-detected — overwrite meta.json.
+            status = {
+              kind: "submitted",
+              submitted: true,
+              message: "Application submitted by user via live browser (auto-detected).",
+            };
+            await writeMeta(paths, { jobUrl: url, site, status, finalUrl: activePage.url() });
+            await outcomeLogger.appendLocalAndSession(paths, "submitted:auto_detected");
+            await outcomeLogger.logState({
+              state: "submitted",
+              description: "Submission auto-detected from page URL/content",
+              paths,
+              finalUrl: activePage.url(),
+            });
+          },
+        );
+
+        if (!autoSubmitted) {
+          // Manual resume (or timeout) — keep status as "filled" / waiting_for_review
+          console.log("[spec] Manual resume received — status stays waiting_for_review.");
+        }
       }
 
       await outcomeLogger.appendLocalAndSession(paths, "run_complete");

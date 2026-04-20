@@ -228,6 +228,9 @@ function mapMetaStatusToRunnerResult(metaStatus) {
   if (metaStatus.kind === "filled") {
     return { status: "waiting_for_review", hard_blocker: false, message: metaStatus.message || "Run completed and paused before submit" };
   }
+  if (metaStatus.kind === "submitted") {
+    return { status: "submitted", hard_blocker: false, message: metaStatus.message || "Application submitted by user" };
+  }
   return { status: "failed", hard_blocker: false, message: metaStatus.message || "Run failed" };
 }
 
@@ -412,12 +415,28 @@ async function runAutomation(payload) {
     const vncUrl = buildVncUrl();
     console.log(`[runner] App ${appId} paused for human action. VNC: ${vncUrl}`);
 
-    // Store session so /resume can signal and await it
+    // Store session so /resume can signal and await it.
+    // Also store userId so the auto-exit handler can call pushToSupabase.
+    const sessionUserId = String(payload?.user_id ?? "");
     activeSessions.set(appId, { proc, doneFile, exitPromise, tempDir, outputDir, cleanupPaths, runId });
 
-    // Clean up when Playwright eventually finishes (don't await here)
-    exitPromise.then(() => {
-      activeSessions.delete(appId);
+    // Auto-exit handler: if Playwright exits without /resume ever being called
+    // (e.g. spec auto-detected submission and exited on its own), push the final
+    // state to Supabase here.  If /resume was called first, handleResume() already
+    // deleted the session from activeSessions, so wasActive will be false and we
+    // skip the duplicate push.
+    exitPromise.then(async (procResult) => {
+      const wasActive = activeSessions.delete(appId); // true only if /resume wasn't called
+      if (wasActive) {
+        console.log(`[session] Playwright exited for ${appId} without /resume — pushing final state.`);
+        try {
+          const { body } = await readArtifacts(outputDir, runId, procResult);
+          console.log(`[session] Auto-exit status for ${appId}: ${body.status}`);
+          await pushToSupabase(appId, sessionUserId, body);
+        } catch (e) {
+          console.error(`[session] Auto-exit pushToSupabase failed for ${appId}:`, e.message);
+        }
+      }
       for (const f of cleanupPaths) fs.rm(f, { force: true }).catch(() => {});
       fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
     });
@@ -454,12 +473,15 @@ async function pushToSupabase(appId, userId, runnerBody) {
   }
 
   const returnedStatus = typeof runnerBody.status === "string" ? runnerBody.status : "";
+  const isSubmitted = returnedStatus === "submitted";
   const queueState =
-    returnedStatus === "waiting_for_human_action" || returnedStatus === "blocked"
-      ? "waiting_for_human_action"
-      : returnedStatus === "failed"
-        ? "failed"
-        : "waiting_for_review";
+    isSubmitted
+      ? "waiting_for_review"  // row will be hidden anyway by submission_status filter
+      : returnedStatus === "waiting_for_human_action" || returnedStatus === "blocked"
+        ? "waiting_for_human_action"
+        : returnedStatus === "failed"
+          ? "failed"
+          : "waiting_for_review";
 
   const now = new Date().toISOString();
   const headers = {
@@ -470,25 +492,29 @@ async function pushToSupabase(appId, userId, runnerBody) {
   };
 
   // 1. Update applications row
+  const patchBody = {
+    automation_queue_state: queueState,
+    automation_last_run_at: now,
+    automation_last_outcome: isSubmitted ? "submitted" : queueState,
+    automation_last_error: runnerBody.message ?? runnerBody.error ?? null,
+    automation_last_context: {
+      queue_state: queueState,
+      failure_reason: runnerBody.message ?? runnerBody.error ?? null,
+      context: { resumed: true, queue_handoff: true, queue_run_at: now },
+    },
+    // Clear the live URL now that the session is done
+    automation_live_url: null,
+    // Mark as submitted when the spec auto-detected the confirmation page
+    ...(isSubmitted ? { submission_status: "submitted", submitted_at: now } : {}),
+  };
+
   try {
     const patchRes = await fetch(
       `${SUPABASE_URL}/rest/v1/applications?id=eq.${encodeURIComponent(appId)}&user_id=eq.${encodeURIComponent(userId)}&submission_status=neq.submitted`,
       {
         method: "PATCH",
         headers,
-        body: JSON.stringify({
-          automation_queue_state: queueState,
-          automation_last_run_at: now,
-          automation_last_outcome: queueState,
-          automation_last_error: runnerBody.message ?? runnerBody.error ?? null,
-          automation_last_context: {
-            queue_state: queueState,
-            failure_reason: runnerBody.message ?? runnerBody.error ?? null,
-            context: { resumed: true, queue_handoff: true, queue_run_at: now },
-          },
-          // Clear the live URL now that the session is done
-          automation_live_url: null,
-        }),
+        body: JSON.stringify(patchBody),
       },
     );
     if (!patchRes.ok) {
@@ -503,11 +529,13 @@ async function pushToSupabase(appId, userId, runnerBody) {
   // 2. Insert automation_status event
   try {
     const description =
-      queueState === "waiting_for_review"
-        ? "Autofill completed after human action; waiting for review"
-        : queueState === "waiting_for_human_action"
-          ? "Resume completed but another human action is still required"
-          : "Run failed after resume";
+      isSubmitted
+        ? "Application submitted by user via live browser (auto-detected)"
+        : queueState === "waiting_for_review"
+          ? "Autofill completed after human action; waiting for review"
+          : queueState === "waiting_for_human_action"
+            ? "Resume completed but another human action is still required"
+            : "Run failed after resume";
     const evtRes = await fetch(`${SUPABASE_URL}/rest/v1/application_events`, {
       method: "POST",
       headers,
