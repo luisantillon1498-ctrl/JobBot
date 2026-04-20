@@ -687,6 +687,20 @@ const server = createServer(async (req, res) => {
         return sendJson(res, 400, { error: "Missing required field: job_url" });
       }
 
+      // Guard: refuse a new Playwright process if one is already paused in the
+      // live browser. Two Chrome windows on the same Xvfb display cause a GPU
+      // SEGV_MAPERR crash that kills both sessions.
+      if (activeSessions.size > 0) {
+        const activeIds = [...activeSessions.keys()].join(", ");
+        console.log(`[runner] Rejecting /run for ${payload.application_id} — active session(s) still in VNC: ${activeIds}`);
+        return sendJson(res, 409, {
+          ok: false,
+          status: "waiting_for_human_action",
+          hard_blocker: true,
+          message: `Another application is currently open in the live browser (${activeIds}). Resume or complete it before starting a new one.`,
+        });
+      }
+
       const result = await runAutomation(payload);
       return sendJson(res, result.httpStatus, result.body);
     } catch (error) {
