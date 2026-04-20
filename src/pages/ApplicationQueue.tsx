@@ -505,7 +505,8 @@ export default function ApplicationQueue() {
                                         className="w-full border-0"
                                         style={{ height: "480px" }}
                                         title={`Live browser for ${row.company_name} — ${row.job_title}`}
-                                        allow="clipboard-read; clipboard-write"
+                                        allow="clipboard-read; clipboard-write; fullscreen"
+                                        allowFullScreen
                                       />
                                     </div>
                                   ) : (
