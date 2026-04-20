@@ -247,7 +247,7 @@ const SITE_ID_BAG_EXTRA_SCORE: Partial<
     first_name:        [/^first_name$/i, /^first\.?name$/i],
     last_name:         [/^last_name$/i,  /^last\.?name$/i],
     email:             [/^email$/i],
-    phone:             [/^phone$/i],
+    phone:             [/\bphone\b/i],
     resume_path:       [/^resume$/i],
     cover_letter_path: [/^cover_letter$/i],
     location:          [/^(candidate[_-]?)?location$/i],
@@ -295,6 +295,7 @@ const NEGATIVE_PATTERNS: Partial<Record<SupportedFieldKey, RegExp[]>> = {
   phone: [/\bfax\b/i],
   resume_path: [/\bcover letter\b/i],
   cover_letter_path: [/\bresume\b/i, /\bcv\b/i],
+  race_ethnicity: [/\bhispanic\b/i, /\blatino\b/i, /\blatina\b/i],
 };
 
 function fieldPatternsForSite(site: AtsPlanSite, target: SupportedFieldKey): RegExp[] {

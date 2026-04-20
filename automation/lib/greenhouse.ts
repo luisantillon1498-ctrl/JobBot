@@ -60,6 +60,24 @@ const GH_HUMAN_READABLE: Record<string, string> = {
   has_disability: "Yes, I have a disability",
 };
 
+/** Robust option matching — handles decline synonyms and gender aliases. */
+function ghMatchesOption(displayValue: string, optionText: string): boolean {
+  const norm = (s: string) =>
+    s.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+  const v = norm(displayValue);
+  const o = norm(optionText);
+  if (!v || !o) return false;
+  if (o.includes(v) || v.includes(o)) return true;
+  const declineTerms = ["decline", "prefer not", "choose not", "do not wish", "don t wish", "not to answer", "not wish", "don t want"];
+  const vIsDecline = declineTerms.some((t) => v.includes(t));
+  const oIsDecline = declineTerms.some((t) => o.includes(t));
+  if (vIsDecline && oIsDecline) return true;
+  if ((v === "man" || v === "male") && (o === "male" || o === "man" || o.startsWith("male") || o.startsWith("man"))) return true;
+  if ((v === "woman" || v === "female") && (o.includes("female") || o.includes("woman"))) return true;
+  if (v.includes("non binary") && (o.includes("non binary") || o.includes("nonbinary"))) return true;
+  return false;
+}
+
 /**
  * Greenhouse EEO + Country dropdowns are custom React Select components.
  * extractFieldCandidates finds the hidden backing <input> and fill() sets
@@ -67,15 +85,15 @@ const GH_HUMAN_READABLE: Record<string, string> = {
  * clicks the visible trigger and selects the matching option instead.
  */
 async function fillGreenhouseCustomDropdowns(page: Page, payload: ApplicantPayload): Promise<void> {
-  const fields: Array<{ labelPattern: RegExp; value: string | undefined }> = [
-    { labelPattern: /\bcountry\b/i,            value: payload.country },
-    { labelPattern: /\bgender\b/i,             value: payload.gender },
+  const fields: Array<{ labelPattern: RegExp; value: string | undefined; isCountry?: boolean }> = [
+    { labelPattern: /\bcountry\b/i,             value: payload.country, isCountry: true },
+    { labelPattern: /\bgender\b/i,              value: payload.gender },
     { labelPattern: /\bhispanic\b|\blatino\b/i, value: payload.hispanic_ethnicity },
-    { labelPattern: /\bveteran\b/i,            value: payload.veteran_status },
-    { labelPattern: /\bdisabilit/i,            value: payload.disability_status },
+    { labelPattern: /\bveteran\b/i,             value: payload.veteran_status },
+    { labelPattern: /\bdisabilit/i,             value: payload.disability_status },
   ];
 
-  for (const { labelPattern, value } of fields) {
+  for (const { labelPattern, value, isCountry } of fields) {
     if (!value) continue;
     const displayValue = GH_HUMAN_READABLE[value] ?? value;
 
@@ -85,19 +103,26 @@ async function fillGreenhouseCustomDropdowns(page: Page, payload: ApplicantPaylo
         .locator("label, legend, .field-label, [class*='label' i]")
         .all();
 
-      let triggerEl: Locator | null = null;
+      let triggerEl: import("@playwright/test").Locator | null = null;
 
       for (const label of allLabels) {
         const text = await label.textContent().catch(() => "");
         if (!text || !labelPattern.test(text)) continue;
 
-        // Walk up two levels and search for a dropdown trigger inside
         for (const ancestor of [
           label.locator("xpath=.."),
           label.locator("xpath=../.."),
           label.locator("xpath=../../.."),
         ]) {
-          // Greenhouse custom select button
+          // For country, skip the intl-tel-input phone widget's country selector
+          if (isCountry) {
+            const isPhoneWidget = await ancestor
+              .locator(".iti, .intl-tel-input, [class*='iti__']")
+              .count()
+              .catch(() => 0);
+            if (isPhoneWidget > 0) continue;
+          }
+
           const btn = ancestor
             .locator(
               "button[aria-haspopup], [role='combobox'], .select-dropdown--button, [class*='select' i][class*='control' i]",
@@ -105,7 +130,6 @@ async function fillGreenhouseCustomDropdowns(page: Page, payload: ApplicantPaylo
             .first();
           if ((await btn.count()) > 0) { triggerEl = btn; break; }
 
-          // Fallback: any element visually showing "Select…"
           const placeholder = ancestor.locator(":text('Select...')").first();
           if ((await placeholder.count()) > 0) { triggerEl = placeholder; break; }
         }
@@ -128,10 +152,11 @@ async function fillGreenhouseCustomDropdowns(page: Page, payload: ApplicantPaylo
       const options = await optionLocator.all();
       let matched = false;
       for (const opt of options) {
-        const optText = ((await opt.textContent().catch(() => "")) ?? "").trim().toLowerCase();
-        const target = displayValue.toLowerCase();
+        const optText = ((await opt.textContent().catch(() => "")) ?? "").trim();
         if (!optText) continue;
-        if (optText.includes(target) || target.includes(optText)) {
+        // For country, skip phone dial code options (e.g. "United States +1")
+        if (isCountry && /\+\d+/.test(optText)) continue;
+        if (ghMatchesOption(displayValue, optText)) {
           await opt.click({ timeout: 3000 });
           matched = true;
           console.log(`[gh-dropdown] ✓ "${optText}" for /${labelPattern.source}/`);
@@ -140,7 +165,6 @@ async function fillGreenhouseCustomDropdowns(page: Page, payload: ApplicantPaylo
       }
       if (!matched) {
         console.log(`[gh-dropdown] ✗ no option matched "${displayValue}" for /${labelPattern.source}/`);
-        // Close dropdown
         await page.keyboard.press("Escape").catch(() => {});
       }
 

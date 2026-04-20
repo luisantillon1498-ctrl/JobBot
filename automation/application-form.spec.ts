@@ -250,8 +250,8 @@ test.describe("Application form automation", () => {
           : site === "workday"
             ? await fillWorkdayApplicationForm(activePage, payload)
             : await fillAshbyApplicationForm(activePage, payload);
-      await saveScreenshot(activePage, paths.screenshotAfterPath);
-      await saveDomSnapshot(activePage, paths.domSnapshotPath);
+      await saveScreenshot(activePage, paths.screenshotAfterPath).catch(() => {});
+      await saveDomSnapshot(activePage, paths.domSnapshotPath).catch(() => {});
       await writeJson(paths.fieldMappingsPath, {
         mappingPlan: fillReport.mappingPlan,
         fieldMappings: fillReport.fieldMappings,
