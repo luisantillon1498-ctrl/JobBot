@@ -47,6 +47,110 @@ async function resolveGreenhouseFormFrame(page: Page): Promise<Page> {
   return page;
 }
 
+/** Human-readable labels for DB enum values — kept in sync with Settings.tsx. */
+const GH_HUMAN_READABLE: Record<string, string> = {
+  man: "Man", male: "Male", woman: "Woman", female: "Female",
+  non_binary: "Non-Binary", other: "Other",
+  prefer_not_to_say: "Prefer not to say",
+  yes: "Yes", no: "No",
+  not_a_protected_veteran: "I am not a protected veteran",
+  protected_veteran: "I am a protected veteran",
+  decline_to_answer: "I prefer not to answer",
+  no_disability: "No, I do not have a disability",
+  has_disability: "Yes, I have a disability",
+};
+
+/**
+ * Greenhouse EEO + Country dropdowns are custom React Select components.
+ * extractFieldCandidates finds the hidden backing <input> and fill() sets
+ * its value, but that doesn't update the visible dropdown. This helper
+ * clicks the visible trigger and selects the matching option instead.
+ */
+async function fillGreenhouseCustomDropdowns(page: Page, payload: ApplicantPayload): Promise<void> {
+  const fields: Array<{ labelPattern: RegExp; value: string | undefined }> = [
+    { labelPattern: /\bcountry\b/i,            value: payload.country },
+    { labelPattern: /\bgender\b/i,             value: payload.gender },
+    { labelPattern: /\bhispanic\b|\blatino\b/i, value: payload.hispanic_ethnicity },
+    { labelPattern: /\bveteran\b/i,            value: payload.veteran_status },
+    { labelPattern: /\bdisabilit/i,            value: payload.disability_status },
+  ];
+
+  for (const { labelPattern, value } of fields) {
+    if (!value) continue;
+    const displayValue = GH_HUMAN_READABLE[value] ?? value;
+
+    try {
+      // ── Find a label whose text matches this field ──────────────────────
+      const allLabels = await page
+        .locator("label, legend, .field-label, [class*='label' i]")
+        .all();
+
+      let triggerEl: Locator | null = null;
+
+      for (const label of allLabels) {
+        const text = await label.textContent().catch(() => "");
+        if (!text || !labelPattern.test(text)) continue;
+
+        // Walk up two levels and search for a dropdown trigger inside
+        for (const ancestor of [
+          label.locator("xpath=.."),
+          label.locator("xpath=../.."),
+          label.locator("xpath=../../.."),
+        ]) {
+          // Greenhouse custom select button
+          const btn = ancestor
+            .locator(
+              "button[aria-haspopup], [role='combobox'], .select-dropdown--button, [class*='select' i][class*='control' i]",
+            )
+            .first();
+          if ((await btn.count()) > 0) { triggerEl = btn; break; }
+
+          // Fallback: any element visually showing "Select…"
+          const placeholder = ancestor.locator(":text('Select...')").first();
+          if ((await placeholder.count()) > 0) { triggerEl = placeholder; break; }
+        }
+        if (triggerEl) break;
+      }
+
+      if (!triggerEl) {
+        console.log(`[gh-dropdown] no trigger found for /${labelPattern.source}/`);
+        continue;
+      }
+
+      await triggerEl.scrollIntoViewIfNeeded().catch(() => {});
+      await triggerEl.click({ timeout: 4000 });
+      await page.waitForTimeout(400);
+
+      // ── Find and click the matching option ─────────────────────────────
+      const optionLocator = page.locator(
+        "[role='option'], .select-dropdown--item, [class*='option' i]:not([class*='no-option' i])",
+      );
+      const options = await optionLocator.all();
+      let matched = false;
+      for (const opt of options) {
+        const optText = ((await opt.textContent().catch(() => "")) ?? "").trim().toLowerCase();
+        const target = displayValue.toLowerCase();
+        if (!optText) continue;
+        if (optText.includes(target) || target.includes(optText)) {
+          await opt.click({ timeout: 3000 });
+          matched = true;
+          console.log(`[gh-dropdown] ✓ "${optText}" for /${labelPattern.source}/`);
+          break;
+        }
+      }
+      if (!matched) {
+        console.log(`[gh-dropdown] ✗ no option matched "${displayValue}" for /${labelPattern.source}/`);
+        // Close dropdown
+        await page.keyboard.press("Escape").catch(() => {});
+      }
+
+      await page.waitForTimeout(200);
+    } catch (err) {
+      console.log(`[gh-dropdown] error for /${labelPattern.source}/: ${err}`);
+    }
+  }
+}
+
 /**
  * Best-effort fill for public Greenhouse job forms (boards / embeds).
  * Does not submit. Skips missing fields without throwing.
@@ -64,7 +168,10 @@ export async function fillGreenhouseApplicationForm(page: Page, payload: Applica
   await formPage.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
   await formPage.waitForTimeout(300);
 
-  return fillAtsApplicationForm(formPage, payload, "greenhouse");
+  const report = await fillAtsApplicationForm(formPage, payload, "greenhouse");
+  // EEO + Country dropdowns are custom React Select components — fill them separately.
+  await fillGreenhouseCustomDropdowns(formPage, payload);
+  return report;
 }
 
 export function greenhouseSubmitButton(page: Page): Locator {

@@ -753,6 +753,7 @@ export async function fillAtsApplicationForm(page: Page, payload: ApplicantPaylo
   for (const target of ORDERED_TARGETS) {
     const value = payloadValueForTarget(payload, target)?.trim();
     if (!value) {
+      console.log(`[fill] EMPTY ${target}: no payload value`);
       skippedEmpty.push(target);
       continue;
     }
