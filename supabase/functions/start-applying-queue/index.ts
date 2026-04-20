@@ -606,7 +606,10 @@ serve(async (req) => {
 
       await processRunnerResult({ appId, app, body, runnerBaseUrl });
       const last = outcomes[outcomes.length - 1];
-      if (last?.hard_blocker) hardStop = true;
+      // Stop queue if this app is paused for human action — starting another
+      // Playwright process on the shared VNC display while one is paused would
+      // overwrite the live browser view and cause conflicting data entry.
+      if (last?.hard_blocker || last?.state === "waiting_for_human_action") hardStop = true;
     }
 
     // ── Shared result processor ──────────────────────────────────────────────

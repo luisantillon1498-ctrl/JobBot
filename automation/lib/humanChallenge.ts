@@ -39,19 +39,13 @@ export async function detectHumanChallenge(page: Page): Promise<{ present: boole
       doc.querySelector("[data-sitekey], .g-recaptcha, iframe[src*='recaptcha'], iframe[title*='reCAPTCHA']"),
     );
     if (recaptchaPresent) {
-      // Count visible text inputs, selects, textareas, and file inputs on the page.
-      // An application form will have many; a pure CAPTCHA page will have zero.
-      const formInputs = doc.querySelectorAll(
+      // Count non-hidden form inputs in the DOM — no rendering dependency.
+      // An application form always has 3+; a pure CAPTCHA interstitial page has 0-1.
+      const formInputCount = doc.querySelectorAll(
         "input:not([type='hidden']):not([type='submit']):not([type='button']):not([type='checkbox']):not([type='radio']), select, textarea, input[type='file']",
-      );
-      const visibleInputCount = Array.from(formInputs).filter((el) => {
-        const r = (el as HTMLElement).getBoundingClientRect();
-        return r.width > 0 && r.height > 0;
-      }).length;
+      ).length;
 
-      // If there are 3+ visible form inputs alongside the reCAPTCHA, it's embedded —
-      // don't block. The filler will handle the other fields; user solves CAPTCHA at review.
-      if (visibleInputCount >= 3) {
+      if (formInputCount >= 3) {
         return { present: false, reason: "recaptcha_embedded_in_form" };
       }
 
