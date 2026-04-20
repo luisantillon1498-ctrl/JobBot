@@ -421,8 +421,8 @@ export default function ApplicationQueue() {
                 <CardTitle className="text-amber-700 dark:text-amber-400">Your Queue</CardTitle>
               </div>
               <CardDescription>
-                These applications need your attention before the bot can continue. Complete any verification steps in the
-                browser frame below, then click <strong>Resume Automation</strong>.
+                These applications need your attention. If a filled form is shown below, review it and submit, then click{" "}
+                <strong>Resume Automation</strong>. If a verification step is blocking, complete it first.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -489,7 +489,7 @@ export default function ApplicationQueue() {
                                     <div className="rounded-lg border border-amber-500/40 overflow-hidden">
                                       <div className="bg-amber-500/10 px-3 py-1.5 flex items-center justify-between border-b border-amber-500/30">
                                         <span className="text-xs font-medium text-amber-700 dark:text-amber-400">
-                                          Live browser — complete the verification below, then click Resume
+                                          Live browser — review or complete any steps below, then click Resume Automation
                                         </span>
                                         <a
                                           href={row.automation_live_url}

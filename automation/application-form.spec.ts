@@ -316,6 +316,22 @@ test.describe("Application form automation", () => {
       /** Do not advance to `ready_to_submit` here — that is a post-review user action in the app. */
       await outcomeLogger.syncSessionArtifacts(paths);
       await writeMeta(paths, { jobUrl: url, site, status, finalUrl: activePage.url() });
+
+      // ── Keep the browser open for user review ──────────────────────────────
+      // Write the same paused-file used for CAPTCHA handoffs so the runner keeps
+      // the VNC session alive and returns the live URL to the UI. The user reviews
+      // the filled form in the browser frame, submits if satisfied, then clicks
+      // "Resume Automation" to close the session.
+      const reviewPausedPath = pausedFilePath();
+      const reviewDoneSignal = humanActionDoneSignalPath();
+      if (reviewPausedPath && reviewDoneSignal) {
+        await fs.writeFile(reviewPausedPath, "paused");
+        console.log("[spec] Form filled — waiting for user to review and resume.");
+        await waitForResumeSignal(reviewDoneSignal, humanChallengeTimeoutMs());
+        // Whether or not the timeout fires, meta.json already records kind:"filled".
+        // The runner will map that to waiting_for_review and clear the live URL.
+      }
+
       await outcomeLogger.appendLocalAndSession(paths, "run_complete");
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
