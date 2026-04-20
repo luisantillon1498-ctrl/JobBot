@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import type { ApplicantPayload } from "../types";
 import { fillAtsApplicationForm, type FillReport } from "./atsFormFill";
+import { attemptResumeAutofill } from "./resumeAutofill";
 
 export type { FillReport };
 
@@ -22,5 +23,6 @@ export function isWorkdayJobUrl(url: string): boolean {
  * Shadow-DOM-only widgets may limit mapping; unknown questions still pause via orchestrator policies.
  */
 export async function fillWorkdayApplicationForm(page: Page, payload: ApplicantPayload): Promise<FillReport> {
+  await attemptResumeAutofill(page, payload.resume_path ?? "");
   return fillAtsApplicationForm(page, payload, "workday");
 }

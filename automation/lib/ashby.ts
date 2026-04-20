@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import type { ApplicantPayload } from "../types";
 import { fillAtsApplicationForm, type FillReport } from "./atsFormFill";
+import { attemptResumeAutofill } from "./resumeAutofill";
 
 export type { FillReport };
 
@@ -59,5 +60,6 @@ async function navigateToAshbyForm(page: Page): Promise<void> {
  */
 export async function fillAshbyApplicationForm(page: Page, payload: ApplicantPayload): Promise<FillReport> {
   await navigateToAshbyForm(page);
+  await attemptResumeAutofill(page, payload.resume_path ?? "");
   return fillAtsApplicationForm(page, payload, "ashby");
 }

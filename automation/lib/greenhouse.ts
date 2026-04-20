@@ -1,6 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import type { ApplicantPayload } from "../types";
 import { fillAtsApplicationForm, type FieldMappingPlan, type FillReport } from "./atsFormFill";
+import { attemptResumeAutofill } from "./resumeAutofill";
 
 export type { FieldMappingPlan, FillReport };
 
@@ -52,6 +53,7 @@ async function resolveGreenhouseFormFrame(page: Page): Promise<Page> {
  */
 export async function fillGreenhouseApplicationForm(page: Page, payload: ApplicantPayload): Promise<FillReport> {
   const formPage = await resolveGreenhouseFormFrame(page);
+  await attemptResumeAutofill(formPage, payload.resume_path ?? "");
   return fillAtsApplicationForm(formPage, payload, "greenhouse");
 }
 
