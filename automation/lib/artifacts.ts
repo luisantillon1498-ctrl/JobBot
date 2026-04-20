@@ -34,7 +34,11 @@ export async function appendRunLog(paths: ArtifactPaths, message: string): Promi
 }
 
 export async function saveScreenshot(page: Page, filePath: string): Promise<void> {
-  await page.screenshot({ path: filePath, fullPage: true });
+  // Non-fatal: a crashed GPU process (e.g. two Chrome sessions sharing one Xvfb)
+  // should not abort the entire test run.
+  await page.screenshot({ path: filePath, fullPage: true }).catch((err) => {
+    console.warn(`[artifacts] screenshot skipped: ${err instanceof Error ? err.message : String(err)}`);
+  });
 }
 
 export async function saveDomSnapshot(page: Page, filePath: string): Promise<void> {

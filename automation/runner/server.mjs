@@ -602,7 +602,15 @@ async function handleResume(appId, userId) {
       console.log(`[resume] Awaiting Playwright completion for ${appId} in background ...`);
       const procResult = await session.exitPromise;
       console.log(`[resume] Playwright finished for ${appId} with code ${procResult.code}`);
-      activeSessions.delete(appId);
+
+      // Guard against double-push: the auto-exit handler (exitPromise.then in
+      // runAutomation) runs first and deletes the session.  If it already ran,
+      // wasActive is false and we skip — pushToSupabase was already called there.
+      const wasActive = activeSessions.delete(appId);
+      if (!wasActive) {
+        console.log(`[resume] Session for ${appId} already cleaned up by auto-exit handler — skipping duplicate push.`);
+        return;
+      }
 
       const { httpStatus, body } = await readArtifacts(session.outputDir, session.runId, procResult);
       console.log(`[resume] Artifacts read for ${appId}: status=${body.status}`);
