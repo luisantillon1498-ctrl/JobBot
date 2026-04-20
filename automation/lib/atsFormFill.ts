@@ -33,7 +33,10 @@ export type SupportedFieldKey =
   | "cover_letter_path"
   | "location"
   | "work_authorization"
-  | "salary_expectations";
+  | "salary_expectations"
+  | "gender"
+  | "hispanic_ethnicity"
+  | "country";
 
 type CandidateField = {
   selector: string;
@@ -95,6 +98,9 @@ const ORDERED_TARGETS: SupportedFieldKey[] = [
   "location",
   "work_authorization",
   "salary_expectations",
+  "gender",
+  "hispanic_ethnicity",
+  "country",
 ];
 
 const BASE_FIELD_PATTERNS: Record<SupportedFieldKey, RegExp[]> = {
@@ -141,6 +147,17 @@ const BASE_FIELD_PATTERNS: Record<SupportedFieldKey, RegExp[]> = {
     /\bsalary expectations?\b/i, /\bdesired salary\b/i,
     /\bcompensation expectations?\b/i, /\bexpected salary\b/i,
     /\bpay expectations?\b/i,
+  ],
+  gender: [
+    /\bgender\b/i, /\bgender identity\b/i, /\bsex\b/i,
+  ],
+  hispanic_ethnicity: [
+    /\bhispanic\b/i, /\blatino\b/i, /\blatina\b/i,
+    /\bare you hispanic\b/i, /\bhispanic.*latino\b/i,
+  ],
+  country: [
+    /\bcountry\b/i, /\bcountry of residence\b/i,
+    /\bcountry where you live\b/i, /\bwhere do you (live|reside)\b/i,
   ],
 };
 
@@ -197,6 +214,11 @@ const SITE_ID_BAG_EXTRA_SCORE: Partial<
     location:          [/^(candidate[_-]?)?location$/i],
     linkedin_url:      [/linkedin/i],
     work_authorization:[/work_?auth/i, /sponsorship/i],
+    veteran_status:     [/^veteran_status$/i, /veteran/i],
+    disability_status:  [/^disability_status$/i, /disability/i],
+    gender:             [/^gender$/i],
+    hispanic_ethnicity: [/^hispanic_ethnicity$/i, /^hispanic$/i],
+    country:            [/^country$/i],
   },
   // Workday uses data-automation-id starting with "formField-" and camelCase suffixes.
   workday: {
@@ -428,7 +450,36 @@ async function fillWithPlan(page: Page, mapped: MappedField, value: string): Pro
     if (!fs.existsSync(value)) return { matched: false };
     await loc.setInputFiles(value);
   } else {
-    await loc.fill(value);
+    // Check the element tag to decide how to fill
+    const tagName = await loc.evaluate((el) => el.tagName.toLowerCase()).catch(() => "input");
+    if (tagName === "select") {
+      // Try exact value match first, then case-insensitive label match
+      const filled = await loc.evaluate((el, val) => {
+        const select = el as HTMLSelectElement;
+        // 1. Exact value match
+        for (const opt of Array.from(select.options)) {
+          if (opt.value === val) { select.value = opt.value; select.dispatchEvent(new Event("change", { bubbles: true })); return true; }
+        }
+        // 2. Case-insensitive text/label match
+        const lower = val.toLowerCase();
+        for (const opt of Array.from(select.options)) {
+          if (opt.text.toLowerCase().includes(lower) || lower.includes(opt.text.toLowerCase().trim())) {
+            select.value = opt.value;
+            select.dispatchEvent(new Event("change", { bubbles: true }));
+            return true;
+          }
+        }
+        return false;
+      }, value).catch(() => false);
+      if (!filled) {
+        // Playwright selectOption as fallback (handles React-controlled selects)
+        await loc.selectOption({ label: value }).catch(() =>
+          loc.selectOption(value).catch(() => {})
+        );
+      }
+    } else {
+      await loc.fill(value);
+    }
   }
 
   return { matched: true, selector: mapped.selector, previousValue, overwritten };

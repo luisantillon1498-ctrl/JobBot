@@ -27,6 +27,11 @@ export type ApplicantPayload = {
   location?: string;
   work_authorization?: string;
   salary_expectations?: string;
+  veteran_status?: string;
+  disability_status?: string;
+  gender?: string;
+  hispanic_ethnicity?: string;
+  country?: string;
   /** Local file path for resume upload when the board exposes a file input */
   resume_path?: string;
   /** Local file path for cover letter upload when the board exposes a file input */

@@ -69,6 +69,11 @@ export function payloadFromEnv(): ApplicantPayload {
     location: process.env.JOBPAL_LOCATION ?? undefined,
     work_authorization: process.env.JOBPAL_WORK_AUTHORIZATION ?? undefined,
     salary_expectations: process.env.JOBPAL_SALARY_EXPECTATIONS ?? undefined,
+    veteran_status: process.env.JOBPAL_VETERAN_STATUS?.trim() || undefined,
+    disability_status: process.env.JOBPAL_DISABILITY_STATUS?.trim() || undefined,
+    gender: process.env.JOBPAL_GENDER?.trim() || undefined,
+    hispanic_ethnicity: process.env.JOBPAL_HISPANIC_ETHNICITY?.trim() || undefined,
+    country: process.env.JOBPAL_COUNTRY?.trim() || undefined,
     resume_path: process.env.JOBPAL_RESUME_PATH ?? undefined,
     cover_letter_path: process.env.JOBPAL_COVER_LETTER_PATH ?? undefined,
   };
