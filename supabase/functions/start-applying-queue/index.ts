@@ -614,7 +614,7 @@ serve(async (req) => {
       // Stop queue if this app is paused for human action — starting another
       // Playwright process on the shared VNC display while one is paused would
       // overwrite the live browser view and cause conflicting data entry.
-      if (last?.hard_blocker || last?.state === "waiting_for_human_action") hardStop = true;
+      if (last?.hard_blocker || last?.state === "waiting_for_human_action" || last?.state === "waiting_for_review") hardStop = true;
     }
 
     // ── Shared result processor ──────────────────────────────────────────────

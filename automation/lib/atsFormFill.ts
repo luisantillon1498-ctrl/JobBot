@@ -38,6 +38,8 @@ export type SupportedFieldKey =
   | "gender"
   | "hispanic_ethnicity"
   | "race_ethnicity"
+  | "veteran_status"
+  | "disability_status"
   | "country";
 
 type CandidateField = {
@@ -104,6 +106,8 @@ const ORDERED_TARGETS: SupportedFieldKey[] = [
   "gender",
   "hispanic_ethnicity",
   "race_ethnicity",
+  "veteran_status",
+  "disability_status",
   "country",
 ];
 
@@ -166,6 +170,14 @@ const BASE_FIELD_PATTERNS: Record<SupportedFieldKey, RegExp[]> = {
     /\brace\b/i, /\bethnicity\b/i, /\brace.*ethnicity\b/i,
     /\bethnic.*background\b/i, /\brace\/ethnicity\b/i,
   ],
+  veteran_status: [
+    /\bveteran status\b/i, /\bprotected veteran\b/i, /\bvevraa\b/i,
+    /\bmilitary status\b/i, /\bveteran\b/i,
+  ],
+  disability_status: [
+    /\bdisability status\b/i, /\bhave a disability\b/i,
+    /\bdisabilit/i, /\baccommodation\b/i,
+  ],
   country: [
     /\bcountry\b/i, /\bcountry of residence\b/i,
     /\bcountry where you live\b/i, /\bwhere do you (live|reside)\b/i,
@@ -185,6 +197,12 @@ const SITE_FIELD_PATTERN_EXTRA: Record<AtsPlanSite, Partial<Record<SupportedFiel
     location:         [/\blocation\b/i],
     linkedin_url:     [/\blinkedin\b/i, /\bwebsite\b/i],
     work_authorization:[/\bauthorized\b/i, /\bsponsorship\b/i, /\bwork authorization\b/i],
+    veteran_status:    [/\bveteran\b/i, /\bprotected veteran\b/i, /\bself.identify.*veteran\b/i],
+    disability_status: [/\bdisabilit/i, /\bself.identify.*disabilit\b/i],
+    gender:            [/\bgender\b/i],
+    hispanic_ethnicity:[/\bhispanic\b/i, /\blatino\b/i],
+    race_ethnicity:    [/\brace\b/i, /\bethnicity\b/i],
+    country:           [/\bcountry\b/i],
   },
   workday: {
     first_name:       [/\blegal name\b.*\bfirst\b/i, /\bfirst\b.*\blegal\b/i, /\bfirst name\b/i],
@@ -197,6 +215,10 @@ const SITE_FIELD_PATTERN_EXTRA: Record<AtsPlanSite, Partial<Record<SupportedFiel
     location:         [/\bcity\b/i, /\bstate\b/i, /\baddress line\b/i],
     work_authorization:[/\bwork authorization\b/i, /\bauthorized to work\b/i, /\bvisa\b/i],
     salary_expectations:[/\bsalary\b/i, /\bcompensation\b/i],
+    veteran_status:    [/\bveteran\b/i, /\bprotected veteran\b/i],
+    disability_status: [/\bdisabilit/i],
+    gender:            [/\bgender\b/i],
+    country:           [/\bcountry\b/i],
   },
   ashby: {
     full_name:        [/\bfull name\b/i, /\byour name\b/i, /\bname\b/i],
@@ -210,6 +232,10 @@ const SITE_FIELD_PATTERN_EXTRA: Record<AtsPlanSite, Partial<Record<SupportedFiel
     location:         [/\blocation\b/i, /\bcity\b/i],
     work_authorization:[/\bwork authorization\b/i, /\bauthorized\b/i],
     race_ethnicity:   [/\brace\b/i, /\bethnicity\b/i],
+    veteran_status:    [/\bveteran\b/i],
+    disability_status: [/\bdisabilit/i],
+    gender:            [/\bgender\b/i],
+    hispanic_ethnicity:[/\bhispanic\b/i],
   },
 };
 
@@ -326,6 +352,9 @@ function scoreCandidate(site: AtsPlanSite, target: SupportedFieldKey, c: Candida
     score += 1;
   }
   if (score > 0 && target === "race_ethnicity" && (c.tag === "select" || c.inputType === "radio_group")) {
+    score += 1;
+  }
+  if (score > 0 && (target === "veteran_status" || target === "disability_status" || target === "gender" || target === "hispanic_ethnicity") && (c.tag === "select" || c.inputType === "radio_group")) {
     score += 1;
   }
 
@@ -500,7 +529,6 @@ async function fillWithPlan(page: Page, mapped: MappedField, value: string): Pro
     if (!fs.existsSync(value)) return { matched: false };
     await loc.setInputFiles(value);
   } else {
-    // Check the element tag and input type to decide how to fill
     const tagName = await loc.evaluate((el) => el.tagName.toLowerCase()).catch(() => "input");
     const rawInputType = await loc.evaluate((el) => {
       if (el.tagName.toLowerCase() === "input") return (el as HTMLInputElement).type.toLowerCase();
@@ -508,24 +536,43 @@ async function fillWithPlan(page: Page, mapped: MappedField, value: string): Pro
     }).catch(() => "");
 
     if (rawInputType === "radio") {
-      // Radio group — find and click the radio whose label matches the value
+      // Radio group — click the option whose label best matches the value
       const radioName = await loc.evaluate((el) => el.getAttribute("name") ?? "").catch(() => "");
       if (radioName) {
         const clicked = await page.evaluate(({ name, val }) => {
-          const escaped = name.replace(/"/g, '\\"');
+          function matchesOption(rawVal: string, rawOptionText: string): boolean {
+            const norm = (s: string) =>
+              s.toLowerCase().replace(/_/g, " ").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+            const v = norm(rawVal);
+            const o = norm(rawOptionText);
+            if (!v || !o) return false;
+            if (o.includes(v) || v.includes(o)) return true;
+            if ((v === "man" || v === "male") && (o === "male" || o === "man" || o.startsWith("male"))) return true;
+            if ((v === "woman" || v === "female") && (o.includes("female") || o.includes("woman"))) return true;
+            if (v.includes("non binary") && (o.includes("non binary") || o.includes("nonbinary"))) return true;
+            const declineTerms = ["decline", "prefer not", "choose not", "do not wish", "don t wish", "not to answer"];
+            const vIsDecline = declineTerms.some((t) => v.includes(t));
+            const oIsDecline = declineTerms.some((t) => o.includes(t));
+            if (vIsDecline && oIsDecline) return true;
+            if (v === "yes" && (o === "yes" || o.startsWith("yes "))) return true;
+            if (v === "no" && (o === "no" || o.startsWith("no ") || o.startsWith("no,"))) return true;
+            if (v.includes("has disability") && (o.includes("yes") || o.includes("i have"))) return true;
+            if (v.includes("no disability") && o.includes("no") && (o.includes("don") || o.includes("not have"))) return true;
+            if (v.includes("not a protected") && o.includes("not a protected")) return true;
+            if (v.includes("protected veteran") && !v.includes("not") && o.includes("protected veteran") && !o.includes("not")) return true;
+            return false;
+          }
+          const escapedName = name.replace(/"/g, '\\"');
           const radios = Array.from(
-            document.querySelectorAll('input[type="radio"][name="' + escaped + '"]')
+            document.querySelectorAll('input[type="radio"][name="' + escapedName + '"]'),
           ) as HTMLInputElement[];
-          const lower = val.toLowerCase();
           for (const radio of radios) {
             const rid = radio.id;
             const escapedRid = rid.replace(/"/g, '\\"');
-            const labelFor = rid
-              ? (document.querySelector('label[for="' + escapedRid + '"]')?.textContent ?? "")
-              : "";
+            const labelFor = rid ? (document.querySelector('label[for="' + escapedRid + '"]')?.textContent ?? "") : "";
             const wrap = radio.closest("label")?.textContent ?? "";
-            const optionText = (labelFor || wrap).trim().toLowerCase();
-            if (optionText && (optionText.includes(lower) || lower.includes(optionText))) {
+            const optionText = (labelFor || wrap).trim();
+            if (matchesOption(val, optionText)) {
               radio.click();
               radio.dispatchEvent(new Event("change", { bubbles: true }));
               return true;
@@ -533,23 +580,49 @@ async function fillWithPlan(page: Page, mapped: MappedField, value: string): Pro
           }
           return false;
         }, { name: radioName, val: value }).catch(() => false);
+
         if (!clicked) {
-          // Playwright fallback — try clicking by visible text near a radio
+          // Playwright fallback — click first radio of the group
           await page.locator(`input[type="radio"][name="${radioName}"]`).first().click().catch(() => {});
         }
       }
     } else if (tagName === "select") {
-      // Try exact value match first, then case-insensitive label match
+      // Try exact value match first, then robust label match
       const filled = await loc.evaluate((el, val) => {
+        function matchesOption(rawVal: string, rawOptionText: string): boolean {
+          const norm = (s: string) =>
+            s.toLowerCase().replace(/_/g, " ").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+          const v = norm(rawVal);
+          const o = norm(rawOptionText);
+          if (!v || !o) return false;
+          if (o.includes(v) || v.includes(o)) return true;
+          if ((v === "man" || v === "male") && (o === "male" || o === "man" || o.startsWith("male"))) return true;
+          if ((v === "woman" || v === "female") && (o.includes("female") || o.includes("woman"))) return true;
+          if (v.includes("non binary") && (o.includes("non binary") || o.includes("nonbinary"))) return true;
+          const declineTerms = ["decline", "prefer not", "choose not", "do not wish", "don t wish", "not to answer"];
+          const vIsDecline = declineTerms.some((t) => v.includes(t));
+          const oIsDecline = declineTerms.some((t) => o.includes(t));
+          if (vIsDecline && oIsDecline) return true;
+          if (v === "yes" && (o === "yes" || o.startsWith("yes "))) return true;
+          if (v === "no" && (o === "no" || o.startsWith("no ") || o.startsWith("no,"))) return true;
+          if (v.includes("has disability") && (o.includes("yes") || o.includes("i have"))) return true;
+          if (v.includes("no disability") && o.includes("no") && (o.includes("don") || o.includes("not have"))) return true;
+          if (v.includes("not a protected") && o.includes("not a protected")) return true;
+          if (v.includes("protected veteran") && !v.includes("not") && o.includes("protected veteran") && !o.includes("not")) return true;
+          return false;
+        }
         const select = el as HTMLSelectElement;
         // 1. Exact value match
         for (const opt of Array.from(select.options)) {
-          if (opt.value === val) { select.value = opt.value; select.dispatchEvent(new Event("change", { bubbles: true })); return true; }
+          if (opt.value === val) {
+            select.value = opt.value;
+            select.dispatchEvent(new Event("change", { bubbles: true }));
+            return true;
+          }
         }
-        // 2. Case-insensitive text/label match
-        const lower = val.toLowerCase();
+        // 2. Robust text match
         for (const opt of Array.from(select.options)) {
-          if (opt.text.toLowerCase().includes(lower) || lower.includes(opt.text.toLowerCase().trim())) {
+          if (matchesOption(val, opt.text)) {
             select.value = opt.value;
             select.dispatchEvent(new Event("change", { bubbles: true }));
             return true;
@@ -557,11 +630,9 @@ async function fillWithPlan(page: Page, mapped: MappedField, value: string): Pro
         }
         return false;
       }, value).catch(() => false);
+
       if (!filled) {
-        // Playwright selectOption as fallback (handles React-controlled selects)
-        await loc.selectOption({ label: value }).catch(() =>
-          loc.selectOption(value).catch(() => {})
-        );
+        await loc.selectOption({ label: value }).catch(() => loc.selectOption(value).catch(() => {}));
       }
     } else {
       await loc.fill(value);
