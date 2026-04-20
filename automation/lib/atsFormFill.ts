@@ -715,6 +715,9 @@ export async function fillAtsApplicationForm(page: Page, payload: ApplicantPaylo
   const changeLog: FillReport["changeLog"] = [];
   const candidates = await extractFieldCandidates(page);
   const mappingPlan = buildMappingPlan(site, candidates, payload);
+  console.log("[fill] candidates found:", candidates.length);
+  console.log("[fill] mapped fields:", mappingPlan.mapped.map(m => `${m.target}(${m.confidence},score?): ${m.candidateSummary}`));
+  console.log("[fill] issues:", mappingPlan.issues.map(i => `${i.target}: ${i.reason}`));
   const mappedByTarget = new Map<SupportedFieldKey, MappedField>(mappingPlan.mapped.map((m) => [m.target, m]));
 
   for (const target of ORDERED_TARGETS) {
@@ -726,15 +729,18 @@ export async function fillAtsApplicationForm(page: Page, payload: ApplicantPaylo
 
     const mapped = mappedByTarget.get(target);
     if (!mapped || mapped.confidence !== "high") {
+      console.log(`[fill] SKIP ${target}: ${!mapped ? "not_mapped" : "low_confidence"} value="${value}"`);
       notFound.push(target);
       continue;
     }
 
     const result = await fillWithPlan(page, mapped, value);
     if (!result.matched) {
+      console.log(`[fill] NOMATCH ${target}: selector=${mapped.selector}`);
       notFound.push(target);
       continue;
     }
+    console.log(`[fill] OK ${target}: "${value}" → ${mapped.selector}`);
 
     applied[target] = value;
     fieldMappings[target] = result.selector;

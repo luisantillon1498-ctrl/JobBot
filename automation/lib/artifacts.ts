@@ -62,7 +62,7 @@ export async function writeMeta(
 }
 
 export function payloadFromEnv(): ApplicantPayload {
-  return {
+  const result: ApplicantPayload = {
     first_name: process.env.JOBPAL_FIRST_NAME ?? undefined,
     middle_name: process.env.JOBPAL_MIDDLE_NAME ?? undefined,
     preferred_name: process.env.JOBPAL_PREFERRED_NAME ?? undefined,
@@ -82,6 +82,19 @@ export function payloadFromEnv(): ApplicantPayload {
     resume_path: process.env.JOBPAL_RESUME_PATH ?? undefined,
     cover_letter_path: process.env.JOBPAL_COVER_LETTER_PATH ?? undefined,
   };
+  console.log("[payload] env values:", {
+    first_name: result.first_name ?? "(empty)",
+    last_name: result.last_name ?? "(empty)",
+    email: result.email ?? "(empty)",
+    phone: result.phone ?? "(empty)",
+    location: result.location ?? "(empty)",
+    gender: result.gender ?? "(empty)",
+    hispanic_ethnicity: result.hispanic_ethnicity ?? "(empty)",
+    veteran_status: result.veteran_status ?? "(empty)",
+    disability_status: result.disability_status ?? "(empty)",
+    country: result.country ?? "(empty)",
+  });
+  return result;
 }
 
 export function defaultOutputDir(): string {
