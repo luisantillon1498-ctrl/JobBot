@@ -378,7 +378,10 @@ export async function fillAtsApplicationForm(page: Page, payload: ApplicantPaylo
   const fieldMappings: Record<string, string> = {};
   const changeLog: FillReport["changeLog"] = [];
   const candidates = await extractFieldCandidates(page);
+  console.log(`[filler:${site}] Extracted ${candidates.length} field candidates:`, JSON.stringify(candidates.map(c => ({ selector: c.selector, label: c.labelText, name: c.name, id: c.id, placeholder: c.placeholder }))));
   const mappingPlan = buildMappingPlan(site, candidates, payload);
+  console.log(`[filler:${site}] Mapped ${mappingPlan.mapped.length} fields:`, JSON.stringify(mappingPlan.mapped.map(m => ({ target: m.target, selector: m.selector, confidence: m.confidence, score: m.matchedBy }))));
+  console.log(`[filler:${site}] Issues:`, JSON.stringify(mappingPlan.issues.map(i => ({ target: i.target, reason: i.reason }))));
   const mappedByTarget = new Map<SupportedFieldKey, MappedField>(mappingPlan.mapped.map((m) => [m.target, m]));
 
   for (const target of ORDERED_TARGETS) {

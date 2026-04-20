@@ -43,6 +43,10 @@ async function resolveGreenhouseFormFrame(page: Page): Promise<Page> {
   }
 
   // No form iframe found — form is directly on the page (boards.greenhouse.io style).
+  // Log all frames for diagnostics.
+  console.log(`[greenhouse] ${frames.length} frame(s) found on page. URLs: ${frames.map(f => f.url()).join(" | ")}`);
+  const directInputs = await page.locator("input:not([type='hidden']), textarea, select").count().catch(() => 0);
+  console.log(`[greenhouse] Direct page inputs found: ${directInputs}`);
   return page;
 }
 
