@@ -527,17 +527,17 @@ export default function Dashboard() {
       </AlertDialog>
 
       <div className="space-y-8 animate-fade-in">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-3xl font-bold text-foreground">Dashboard</h1>
             <p className="text-muted-foreground mt-1">Track your job applications</p>
           </div>
-          <Button asChild>
+          <Button asChild className="w-full sm:w-auto">
             <Link to="/applications/new"><PlusCircle className="h-4 w-4 mr-2" />New Application</Link>
           </Button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {[
             { label: "Total", value: stats.total, icon: Briefcase, color: "text-foreground" },
             { label: "Active", value: stats.active, icon: Clock, color: "text-primary" },
@@ -545,7 +545,7 @@ export default function Dashboard() {
             { label: "Rejected", value: stats.rejected, icon: XCircle, color: "text-destructive" },
           ].map(s => (
             <Card key={s.label}>
-              <CardContent className="pt-6">
+              <CardContent className="p-4 sm:pt-6">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm text-muted-foreground">{s.label}</p>
@@ -656,7 +656,59 @@ export default function Dashboard() {
                   Showing {filteredSortedApplications.length} of {applications.length} application
                   {applications.length === 1 ? "" : "s"}
                 </p>
-                <div className="rounded-md border border-border">
+                <div className="md:hidden space-y-2">
+                  {filteredSortedApplications.map((app) => (
+                    <div key={app.id} className="rounded-lg border border-border bg-card p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            {coverSparkleByAppId[app.id] && (
+                              <span className={coverSparkleByAppId[app.id] === "gold"
+                                ? "text-sm leading-none drop-shadow-[0_0_3px_rgba(234,179,8,0.75)] saturate-150"
+                                : "text-sm leading-none grayscale opacity-[0.55]"}>✨</span>
+                            )}
+                            <Link
+                              to={`/applications/${app.id}`}
+                              state={{ fromPage: "dashboard" }}
+                              className="text-primary hover:underline font-medium text-sm truncate block"
+                            >
+                              {app.job_title}
+                            </Link>
+                          </div>
+                          <p className="text-xs text-muted-foreground truncate">{app.company_name}{app.location ? ` · ${app.location}` : ""}</p>
+                          <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                            <Badge className={submissionStatusColors[app.submission_status]} variant="secondary">
+                              {submissionStatusLabels[app.submission_status] || app.submission_status}
+                            </Badge>
+                            <Badge className={stageColors[app.application_status]} variant="secondary">
+                              {stageLabels[app.application_status] || app.application_status}
+                            </Badge>
+                            {app.outcome && (
+                              <Badge className={outcomeColors[app.outcome]} variant="secondary">
+                                {outcomeLabels[app.outcome] || app.outcome}
+                              </Badge>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <span className="text-xs text-muted-foreground whitespace-nowrap">
+                            {format(new Date(app.updated_at), "MMM d")}
+                          </span>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="text-muted-foreground hover:text-destructive h-7 w-7"
+                            onClick={() => setDeleteTarget(app)}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="hidden md:block rounded-md border border-border">
                   <Table>
                     <TableHeader>
                       <TableRow className="hover:bg-transparent">

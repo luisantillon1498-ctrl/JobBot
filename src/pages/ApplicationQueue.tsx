@@ -473,131 +473,232 @@ export default function ApplicationQueue() {
               {loading ? (
                 <p className="text-muted-foreground py-8 text-center">Loading queue...</p>
               ) : (
-                <div className="rounded-md border border-amber-500/30">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Company</TableHead>
-                        <TableHead>Role Title</TableHead>
-                        <TableHead>Status</TableHead>
-                        <TableHead>Selected Resume</TableHead>
-                        <TableHead>Selected Cover Letter</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {userRows.map((row) => (
-                        <React.Fragment key={row.id}>
-                          <TableRow className="bg-amber-500/5 hover:bg-amber-500/10">
-                            <TableCell className="font-medium">
-                              <Link to={`/applications/${row.id}`} state={{ fromPage: "queue" }} className="text-primary hover:underline">
-                                {row.company_name}
-                              </Link>
-                            </TableCell>
-                            <TableCell>
-                              <Link to={`/applications/${row.id}`} state={{ fromPage: "queue" }} className="text-primary hover:underline">
-                                {row.job_title}
-                              </Link>
-                            </TableCell>
-                            <TableCell>
-                              <div className="flex items-center gap-2">
-                                {runningApplicationId === row.id && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" aria-hidden />}
-                                <Badge
-                                  variant="secondary"
-                                  className={
-                                    row.automation_queue_state === "waiting_for_human_action"
-                                      ? "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400"
-                                      : ""
-                                  }
-                                >
-                                  {statusLabel(row)}
-                                </Badge>
+                <>
+                  {/* Mobile cards — visible below md breakpoint */}
+                  <div className="md:hidden space-y-2">
+                    {userRows.map((row) => (
+                      <div key={row.id} className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 space-y-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <Link to={`/applications/${row.id}`} state={{ fromPage: "queue" }} className="text-primary hover:underline font-medium text-sm truncate block">
+                              {row.job_title}
+                            </Link>
+                            <p className="text-xs text-muted-foreground truncate">{row.company_name}</p>
+                          </div>
+                          <Badge
+                            variant="secondary"
+                            className={
+                              row.automation_queue_state === "waiting_for_human_action"
+                                ? "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400 shrink-0"
+                                : "shrink-0"
+                            }
+                          >
+                            {runningApplicationId === row.id && <Loader2 className="h-3 w-3 mr-1 animate-spin" aria-hidden />}
+                            {statusLabel(row)}
+                          </Badge>
+                        </div>
+                        {row.automation_queue_state === "waiting_for_human_action" && (
+                          <div className="space-y-3">
+                            <Alert variant="default" className="border-amber-500/50 bg-amber-500/5 py-2">
+                              <AlertDescription className="text-sm space-y-1">
+                                <p>{summarizeHandoff([row])}</p>
+                                {row.automation_last_error && (
+                                  <p className="text-xs text-muted-foreground">Detail: {row.automation_last_error}</p>
+                                )}
+                              </AlertDescription>
+                            </Alert>
+                            {row.automation_live_url ? (
+                              <div className="rounded-lg border border-amber-500/40 overflow-hidden">
+                                <div className="bg-amber-500/10 px-3 py-1.5 flex items-center justify-between border-b border-amber-500/30">
+                                  <span className="text-xs font-medium text-amber-700 dark:text-amber-400">
+                                    Live browser
+                                  </span>
+                                  <a
+                                    href={row.automation_live_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-xs text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:text-amber-600"
+                                  >
+                                    Open in new tab ↗
+                                  </a>
+                                </div>
+                                <iframe
+                                  src={row.automation_live_url}
+                                  className="w-full border-0"
+                                  style={{ height: "300px" }}
+                                  title={`Live browser for ${row.company_name} — ${row.job_title}`}
+                                  allow="clipboard-read; clipboard-write; fullscreen"
+                                  allowFullScreen
+                                />
                               </div>
-                            </TableCell>
-                            <TableCell className="text-muted-foreground">{row.selected_resume_label}</TableCell>
-                            <TableCell className="text-muted-foreground">{row.selected_cover_label}</TableCell>
-                          </TableRow>
-                          {row.automation_queue_state === "waiting_for_human_action" && (
-                            <TableRow key={`${row.id}-live`}>
-                              <TableCell colSpan={5} className="p-0">
-                                <div className="mt-2 space-y-3 px-4 pb-4">
-                                  <Alert variant="default" className="border-amber-500/50 bg-amber-500/5 py-2">
-                                    <AlertDescription className="text-sm space-y-1">
-                                      <p>{summarizeHandoff([row])}</p>
-                                      {row.automation_last_error && (
-                                        <p className="text-xs text-muted-foreground">Detail: {row.automation_last_error}</p>
-                                      )}
-                                    </AlertDescription>
-                                  </Alert>
-                                  {row.automation_live_url ? (
-                                    /* noVNC live browser — user interacts directly in this iframe */
-                                    <div className="rounded-lg border border-amber-500/40 overflow-hidden">
-                                      <div className="bg-amber-500/10 px-3 py-1.5 flex items-center justify-between border-b border-amber-500/30">
-                                        <span className="text-xs font-medium text-amber-700 dark:text-amber-400">
-                                          Live browser — review or complete any steps below, then click Resume Automation
-                                        </span>
-                                        <a
-                                          href={row.automation_live_url}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="text-xs text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:text-amber-600"
-                                        >
-                                          Open in new tab ↗
-                                        </a>
-                                      </div>
-                                      <iframe
-                                        src={row.automation_live_url}
-                                        className="w-full border-0"
-                                        style={{ height: "480px" }}
-                                        title={`Live browser for ${row.company_name} — ${row.job_title}`}
-                                        allow="clipboard-read; clipboard-write; fullscreen"
-                                        allowFullScreen
-                                      />
-                                    </div>
-                                  ) : (
-                                    /* Fallback when noVNC URL not yet available */
-                                    <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-4 py-3 space-y-2">
-                                      <p className="text-sm text-muted-foreground">
-                                        Open the job page in your browser, complete the verification, then click <strong>Resume Automation</strong>.
-                                      </p>
-                                      {row.job_url && (
-                                        <a
-                                          href={row.job_url}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="inline-flex items-center gap-1.5 text-sm font-medium text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:text-amber-600"
-                                        >
-                                          Open job page ↗
-                                        </a>
-                                      )}
-                                    </div>
-                                  )}
-                                  <div className="flex gap-2">
-                                    <Button
-                                      onClick={() => void handleResume(row.id)}
-                                      disabled={resumingId === row.id || killingSessionId === row.id}
-                                      className="flex-1 bg-amber-600 hover:bg-amber-700 text-white"
-                                    >
-                                      {resumingId === row.id ? "Resuming…" : "Resume Automation"}
-                                    </Button>
-                                    <Button
-                                      variant="outline"
-                                      onClick={() => void handleEndSession(row.id)}
-                                      disabled={killingSessionId === row.id || resumingId === row.id}
-                                      className="border-amber-500/50 text-amber-700 dark:text-amber-400 hover:bg-amber-500/10"
-                                      title="End the active browser session and free the runner for other applications"
-                                    >
-                                      {killingSessionId === row.id ? "Ending…" : "End Session"}
-                                    </Button>
-                                  </div>
+                            ) : (
+                              <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-4 py-3 space-y-2">
+                                <p className="text-sm text-muted-foreground">
+                                  Open the job page in your browser, complete the verification, then click <strong>Resume Automation</strong>.
+                                </p>
+                                {row.job_url && (
+                                  <a
+                                    href={row.job_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1.5 text-sm font-medium text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:text-amber-600"
+                                  >
+                                    Open job page ↗
+                                  </a>
+                                )}
+                              </div>
+                            )}
+                            <div className="flex flex-wrap gap-2">
+                              <Button
+                                onClick={() => void handleResume(row.id)}
+                                disabled={resumingId === row.id || killingSessionId === row.id}
+                                className="flex-1 bg-amber-600 hover:bg-amber-700 text-white"
+                              >
+                                {resumingId === row.id ? "Resuming…" : "Resume Automation"}
+                              </Button>
+                              <Button
+                                variant="outline"
+                                onClick={() => void handleEndSession(row.id)}
+                                disabled={killingSessionId === row.id || resumingId === row.id}
+                                className="border-amber-500/50 text-amber-700 dark:text-amber-400 hover:bg-amber-500/10"
+                                title="End the active browser session and free the runner for other applications"
+                              >
+                                {killingSessionId === row.id ? "Ending…" : "End Session"}
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Desktop table — hidden below md breakpoint */}
+                  <div className="hidden md:block rounded-md border border-amber-500/30">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Company</TableHead>
+                          <TableHead>Role Title</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Selected Resume</TableHead>
+                          <TableHead>Selected Cover Letter</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {userRows.map((row) => (
+                          <React.Fragment key={row.id}>
+                            <TableRow className="bg-amber-500/5 hover:bg-amber-500/10">
+                              <TableCell className="font-medium">
+                                <Link to={`/applications/${row.id}`} state={{ fromPage: "queue" }} className="text-primary hover:underline">
+                                  {row.company_name}
+                                </Link>
+                              </TableCell>
+                              <TableCell>
+                                <Link to={`/applications/${row.id}`} state={{ fromPage: "queue" }} className="text-primary hover:underline">
+                                  {row.job_title}
+                                </Link>
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex items-center gap-2">
+                                  {runningApplicationId === row.id && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" aria-hidden />}
+                                  <Badge
+                                    variant="secondary"
+                                    className={
+                                      row.automation_queue_state === "waiting_for_human_action"
+                                        ? "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                                        : ""
+                                    }
+                                  >
+                                    {statusLabel(row)}
+                                  </Badge>
                                 </div>
                               </TableCell>
+                              <TableCell className="text-muted-foreground">{row.selected_resume_label}</TableCell>
+                              <TableCell className="text-muted-foreground">{row.selected_cover_label}</TableCell>
                             </TableRow>
-                          )}
-                        </React.Fragment>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
+                            {row.automation_queue_state === "waiting_for_human_action" && (
+                              <TableRow key={`${row.id}-live`}>
+                                <TableCell colSpan={5} className="p-0">
+                                  <div className="mt-2 space-y-3 px-4 pb-4">
+                                    <Alert variant="default" className="border-amber-500/50 bg-amber-500/5 py-2">
+                                      <AlertDescription className="text-sm space-y-1">
+                                        <p>{summarizeHandoff([row])}</p>
+                                        {row.automation_last_error && (
+                                          <p className="text-xs text-muted-foreground">Detail: {row.automation_last_error}</p>
+                                        )}
+                                      </AlertDescription>
+                                    </Alert>
+                                    {row.automation_live_url ? (
+                                      /* noVNC live browser — user interacts directly in this iframe */
+                                      <div className="rounded-lg border border-amber-500/40 overflow-hidden">
+                                        <div className="bg-amber-500/10 px-3 py-1.5 flex items-center justify-between border-b border-amber-500/30">
+                                          <span className="text-xs font-medium text-amber-700 dark:text-amber-400">
+                                            Live browser — review or complete any steps below, then click Resume Automation
+                                          </span>
+                                          <a
+                                            href={row.automation_live_url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-xs text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:text-amber-600"
+                                          >
+                                            Open in new tab ↗
+                                          </a>
+                                        </div>
+                                        <iframe
+                                          src={row.automation_live_url}
+                                          className="w-full border-0"
+                                          style={{ height: "480px" }}
+                                          title={`Live browser for ${row.company_name} — ${row.job_title}`}
+                                          allow="clipboard-read; clipboard-write; fullscreen"
+                                          allowFullScreen
+                                        />
+                                      </div>
+                                    ) : (
+                                      /* Fallback when noVNC URL not yet available */
+                                      <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-4 py-3 space-y-2">
+                                        <p className="text-sm text-muted-foreground">
+                                          Open the job page in your browser, complete the verification, then click <strong>Resume Automation</strong>.
+                                        </p>
+                                        {row.job_url && (
+                                          <a
+                                            href={row.job_url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="inline-flex items-center gap-1.5 text-sm font-medium text-amber-700 dark:text-amber-400 underline underline-offset-2 hover:text-amber-600"
+                                          >
+                                            Open job page ↗
+                                          </a>
+                                        )}
+                                      </div>
+                                    )}
+                                    <div className="flex gap-2">
+                                      <Button
+                                        onClick={() => void handleResume(row.id)}
+                                        disabled={resumingId === row.id || killingSessionId === row.id}
+                                        className="flex-1 bg-amber-600 hover:bg-amber-700 text-white"
+                                      >
+                                        {resumingId === row.id ? "Resuming…" : "Resume Automation"}
+                                      </Button>
+                                      <Button
+                                        variant="outline"
+                                        onClick={() => void handleEndSession(row.id)}
+                                        disabled={killingSessionId === row.id || resumingId === row.id}
+                                        className="border-amber-500/50 text-amber-700 dark:text-amber-400 hover:bg-amber-500/10"
+                                        title="End the active browser session and free the runner for other applications"
+                                      >
+                                        {killingSessionId === row.id ? "Ending…" : "End Session"}
+                                      </Button>
+                                    </div>
+                                  </div>
+                                </TableCell>
+                              </TableRow>
+                            )}
+                          </React.Fragment>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </>
               )}
             </CardContent>
           </Card>
@@ -630,59 +731,14 @@ export default function ApplicationQueue() {
                 )}
               </p>
             ) : (
-              <div className="rounded-md border border-border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-20">Priority</TableHead>
-                      <TableHead>Company</TableHead>
-                      <TableHead>Role Title</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Selected Resume</TableHead>
-                      <TableHead>Selected Cover Letter</TableHead>
-                      <TableHead className="w-24">Exclude</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {jobBotRows.map((row, index) => (
-                      <React.Fragment key={row.id}>
-                        <TableRow>
-                          <TableCell>
-                            <div className="flex items-center gap-1">
-                              <span className="min-w-5 text-sm tabular-nums">{row.automation_queue_priority}</span>
-                              <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => moveRow(index, "up")} disabled={index === 0 || starting}>
-                                <ArrowUp className="h-3.5 w-3.5" />
-                              </Button>
-                              <Button
-                                size="icon"
-                                variant="ghost"
-                                className="h-7 w-7"
-                                onClick={() => moveRow(index, "down")}
-                                disabled={index === jobBotRows.length - 1 || starting}
-                              >
-                                <ArrowDown className="h-3.5 w-3.5" />
-                              </Button>
-                            </div>
-                          </TableCell>
-                          <TableCell className="font-medium">
-                            <Link to={`/applications/${row.id}`} state={{ fromPage: "queue" }} className="text-primary hover:underline">
-                              {row.company_name}
-                            </Link>
-                          </TableCell>
-                          <TableCell>
-                            <Link to={`/applications/${row.id}`} state={{ fromPage: "queue" }} className="text-primary hover:underline">
-                              {row.job_title}
-                            </Link>
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-2">
-                              {runningApplicationId === row.id && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" aria-hidden />}
-                              <Badge variant="secondary">{statusLabel(row)}</Badge>
-                            </div>
-                          </TableCell>
-                          <TableCell className="text-muted-foreground">{row.selected_resume_label}</TableCell>
-                          <TableCell className="text-muted-foreground">{row.selected_cover_label}</TableCell>
-                          <TableCell>
+              <>
+                {/* Mobile cards — visible below md breakpoint */}
+                <div className="md:hidden space-y-2">
+                  {jobBotRows.map((row, index) => (
+                    <div key={row.id} className="rounded-lg border border-border bg-card p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 mb-0.5">
                             <Checkbox
                               checked={row.automation_queue_excluded}
                               onCheckedChange={(checked) => {
@@ -692,13 +748,105 @@ export default function ApplicationQueue() {
                               disabled={starting}
                               aria-label={`Exclude ${row.job_title} at ${row.company_name}`}
                             />
-                          </TableCell>
-                        </TableRow>
-                      </React.Fragment>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
+                            <Link to={`/applications/${row.id}`} state={{ fromPage: "queue" }} className="text-primary hover:underline font-medium text-sm truncate">
+                              {row.job_title}
+                            </Link>
+                          </div>
+                          <p className="text-xs text-muted-foreground truncate ml-6">{row.company_name}</p>
+                          <div className="mt-2 ml-6">
+                            <div className="flex items-center gap-2">
+                              {runningApplicationId === row.id && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" aria-hidden />}
+                              <Badge variant="secondary">{statusLabel(row)}</Badge>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex flex-col items-end gap-1 shrink-0">
+                          <span className="text-xs tabular-nums text-muted-foreground">#{row.automation_queue_priority}</span>
+                          <div className="flex gap-1">
+                            <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => moveRow(index, "up")} disabled={index === 0 || starting}>
+                              <ArrowUp className="h-3 w-3" />
+                            </Button>
+                            <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => moveRow(index, "down")} disabled={index === jobBotRows.length - 1 || starting}>
+                              <ArrowDown className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Desktop table — hidden below md breakpoint */}
+                <div className="hidden md:block rounded-md border border-border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-20">Priority</TableHead>
+                        <TableHead>Company</TableHead>
+                        <TableHead>Role Title</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Selected Resume</TableHead>
+                        <TableHead>Selected Cover Letter</TableHead>
+                        <TableHead className="w-24">Exclude</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {jobBotRows.map((row, index) => (
+                        <React.Fragment key={row.id}>
+                          <TableRow>
+                            <TableCell>
+                              <div className="flex items-center gap-1">
+                                <span className="min-w-5 text-sm tabular-nums">{row.automation_queue_priority}</span>
+                                <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => moveRow(index, "up")} disabled={index === 0 || starting}>
+                                  <ArrowUp className="h-3.5 w-3.5" />
+                                </Button>
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-7 w-7"
+                                  onClick={() => moveRow(index, "down")}
+                                  disabled={index === jobBotRows.length - 1 || starting}
+                                >
+                                  <ArrowDown className="h-3.5 w-3.5" />
+                                </Button>
+                              </div>
+                            </TableCell>
+                            <TableCell className="font-medium">
+                              <Link to={`/applications/${row.id}`} state={{ fromPage: "queue" }} className="text-primary hover:underline">
+                                {row.company_name}
+                              </Link>
+                            </TableCell>
+                            <TableCell>
+                              <Link to={`/applications/${row.id}`} state={{ fromPage: "queue" }} className="text-primary hover:underline">
+                                {row.job_title}
+                              </Link>
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex items-center gap-2">
+                                {runningApplicationId === row.id && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" aria-hidden />}
+                                <Badge variant="secondary">{statusLabel(row)}</Badge>
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-muted-foreground">{row.selected_resume_label}</TableCell>
+                            <TableCell className="text-muted-foreground">{row.selected_cover_label}</TableCell>
+                            <TableCell>
+                              <Checkbox
+                                checked={row.automation_queue_excluded}
+                                onCheckedChange={(checked) => {
+                                  if (checked === "indeterminate") return;
+                                  toggleExcluded(row.id, checked === true);
+                                }}
+                                disabled={starting}
+                                aria-label={`Exclude ${row.job_title} at ${row.company_name}`}
+                              />
+                            </TableCell>
+                          </TableRow>
+                        </React.Fragment>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </>
             )}
           </CardContent>
         </Card>
