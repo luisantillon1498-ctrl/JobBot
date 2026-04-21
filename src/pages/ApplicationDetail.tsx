@@ -36,6 +36,7 @@ import {
 import { ArrowLeft, ChevronDown, ExternalLink, Sparkles, Clock, FileText, Paperclip, X, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn, sanitizeStorageFileName } from "@/lib/utils";
+import { killRunnerSession } from "@/lib/runnerSession";
 import type { Database, DocumentType } from "@/integrations/supabase/types";
 
 const PG_INT_MAX = 2147483647;
@@ -389,6 +390,9 @@ export default function ApplicationDetail() {
     setDeleting(true);
     try {
       if (deleteDialog.kind === "application") {
+        // Best-effort: kill any active VNC/Playwright session before deleting
+        // so the runner doesn't stay locked on a deleted application.
+        try { await killRunnerSession(id!); } catch { /* non-fatal */ }
         const { error } = await supabase.from("applications").delete().eq("id", id);
         if (error) {
           toast.error(error.message || "Could not delete application");

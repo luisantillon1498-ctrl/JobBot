@@ -71,6 +71,45 @@ test.describe("Application form automation", () => {
         paths,
       });
 
+      // ── Stealth: patch navigator properties that reCAPTCHA v3 uses to detect bots ──
+      // These run in the page context before any page scripts execute.
+      await activePage.addInitScript(() => {
+        // Remove the webdriver flag — single biggest automation signal
+        Object.defineProperty(navigator, "webdriver", { get: () => false, configurable: true });
+
+        // Add a minimal chrome object that real Chrome has
+        if (!(window as any).chrome) {
+          (window as any).chrome = { runtime: {} };
+        }
+
+        // Fix navigator.plugins — headless Chrome has 0 plugins; real Chrome has several
+        Object.defineProperty(navigator, "plugins", {
+          get: () => {
+            const arr = [
+              { name: "Chrome PDF Plugin", filename: "internal-pdf-viewer", description: "Portable Document Format" },
+              { name: "Chrome PDF Viewer", filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai", description: "" },
+              { name: "Native Client", filename: "internal-nacl-plugin", description: "" },
+            ];
+            (arr as any).__proto__ = PluginArray.prototype;
+            return arr;
+          },
+          configurable: true,
+        });
+
+        // Fix navigator.languages
+        Object.defineProperty(navigator, "languages", {
+          get: () => ["en-US", "en"],
+          configurable: true,
+        });
+
+        // Prevent permissions.query from leaking automation
+        const originalQuery = window.navigator.permissions.query.bind(window.navigator.permissions);
+        window.navigator.permissions.query = (parameters: PermissionDescriptor) =>
+          parameters.name === "notifications"
+            ? Promise.resolve({ state: Notification.permission as PermissionState, name: "notifications", onchange: null, addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => true })
+            : originalQuery(parameters);
+      });
+
       await activePage.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 });
       await saveScreenshot(activePage, paths.screenshotBeforePath);
       await outcomeLogger.syncSessionArtifacts(paths);

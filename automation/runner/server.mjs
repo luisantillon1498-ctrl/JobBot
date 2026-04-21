@@ -738,6 +738,53 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  // GET /sessions — list active VNC sessions
+  if (req.method === "GET" && req.url === "/sessions") {
+    if (shouldRejectForAuth(req)) return sendJson(res, 401, { error: "Unauthorized runner token" });
+    const sessions = [...activeSessions.keys()].map((id) => ({ application_id: id }));
+    return sendJson(res, 200, { ok: true, active_sessions: sessions, count: sessions.length });
+  }
+
+  // POST /kill-session — kill a specific paused session (or all sessions) so a new run can start
+  if (req.method === "POST" && req.url === "/kill-session") {
+    try {
+      if (shouldRejectForAuth(req)) return sendJson(res, 401, { error: "Unauthorized runner token" });
+
+      const body = await readJsonBody(req);
+      const appId = typeof body.application_id === "string" ? body.application_id.trim() : "";
+
+      if (appId) {
+        // Kill specific session
+        const session = activeSessions.get(appId);
+        if (!session) {
+          return sendJson(res, 200, { ok: true, killed: false, message: `No active session for ${appId}` });
+        }
+        try { session.proc.kill("SIGTERM"); } catch {}
+        activeSessions.delete(appId);
+        for (const f of session.cleanupPaths) fs.rm(f, { force: true }).catch(() => {});
+        fs.rm(session.tempDir, { recursive: true, force: true }).catch(() => {});
+        console.log(`[kill-session] Killed session for ${appId}`);
+        return sendJson(res, 200, { ok: true, killed: true, message: `Session for ${appId} terminated` });
+      } else {
+        // Kill all sessions
+        const ids = [...activeSessions.keys()];
+        for (const id of ids) {
+          const session = activeSessions.get(id);
+          if (session) {
+            try { session.proc.kill("SIGTERM"); } catch {}
+            activeSessions.delete(id);
+            for (const f of session.cleanupPaths) fs.rm(f, { force: true }).catch(() => {});
+            fs.rm(session.tempDir, { recursive: true, force: true }).catch(() => {});
+          }
+        }
+        console.log(`[kill-session] Killed ${ids.length} session(s): ${ids.join(", ") || "(none)"}`);
+        return sendJson(res, 200, { ok: true, killed: ids.length > 0, message: `Terminated ${ids.length} session(s)` });
+      }
+    } catch (error) {
+      return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : "Kill session failed" });
+    }
+  }
+
   return sendJson(res, 404, { error: "Not found" });
 });
 

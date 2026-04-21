@@ -12,6 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { startApplyingQueue, startApplyingQueueSequential } from "@/lib/startApplyingQueue";
+import { killRunnerSession } from "@/lib/runnerSession";
 
 type QueueApplication = {
   id: string;
@@ -152,6 +153,7 @@ export default function ApplicationQueue() {
   const [runningApplicationId, setRunningApplicationId] = useState<string | null>(null);
   const [initialSnapshot, setInitialSnapshot] = useState<string>("[]");
   const [resumingId, setResumingId] = useState<string | null>(null);
+  const [killingSessionId, setKillingSessionId] = useState<string | null>(null);
 
   const humanActionRows = useMemo(
     () => [...jobBotRows, ...userRows].filter((r) => r.automation_queue_state === "waiting_for_human_action"),
@@ -381,6 +383,19 @@ export default function ApplicationQueue() {
     }
   };
 
+  const handleEndSession = async (applicationId: string) => {
+    setKillingSessionId(applicationId);
+    try {
+      await killRunnerSession(applicationId);
+      toast.success("Session ended — runner is now free to start another application");
+      await loadQueue({ silent: true });
+    } catch {
+      toast.error("Could not end session — the runner may already be free");
+    } finally {
+      setKillingSessionId(null);
+    }
+  };
+
   return (
     <AppLayout>
       <div className="space-y-6 animate-fade-in">
@@ -527,13 +542,24 @@ export default function ApplicationQueue() {
                                       )}
                                     </div>
                                   )}
-                                  <Button
-                                    onClick={() => void handleResume(row.id)}
-                                    disabled={resumingId === row.id}
-                                    className="w-full bg-amber-600 hover:bg-amber-700 text-white"
-                                  >
-                                    {resumingId === row.id ? "Resuming…" : "Resume Automation"}
-                                  </Button>
+                                  <div className="flex gap-2">
+                                    <Button
+                                      onClick={() => void handleResume(row.id)}
+                                      disabled={resumingId === row.id || killingSessionId === row.id}
+                                      className="flex-1 bg-amber-600 hover:bg-amber-700 text-white"
+                                    >
+                                      {resumingId === row.id ? "Resuming…" : "Resume Automation"}
+                                    </Button>
+                                    <Button
+                                      variant="outline"
+                                      onClick={() => void handleEndSession(row.id)}
+                                      disabled={killingSessionId === row.id || resumingId === row.id}
+                                      className="border-amber-500/50 text-amber-700 dark:text-amber-400 hover:bg-amber-500/10"
+                                      title="End the active browser session and free the runner for other applications"
+                                    >
+                                      {killingSessionId === row.id ? "Ending…" : "End Session"}
+                                    </Button>
+                                  </div>
                                 </div>
                               </TableCell>
                             </TableRow>
