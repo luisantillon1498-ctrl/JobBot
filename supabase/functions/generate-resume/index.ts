@@ -1,0 +1,884 @@
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const ANTHROPIC_MODEL_DEFAULT = "claude-opus-4-5";
+const GEMINI_MODEL_DEFAULT = "gemini-2.5-flash";
+
+const SYSTEM_MESSAGE =
+  "You are an expert resume writer. Given a job description and the candidate's resume data, select and tailor the most relevant experience, academics, and skills to maximize interview likelihood. Return ONLY a valid JSON object with no markdown fencing.";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface ResumeFeatureRow {
+  id: string;
+  user_id: string;
+  feature_type: "professional_experience" | "academics" | "extracurriculars" | "skills_and_certifications" | "personal";
+  role_title: string;
+  company: string;
+  location: string;
+  degree: string;
+  major: string;
+  from_date: string | null;
+  to_date: string | null;
+  description_lines: string[];
+  sort_order: number;
+}
+
+interface ProfileRow {
+  full_name: string | null;
+  professional_email: string | null;
+  phone: string | null;
+  linkedin_url: string | null;
+  city: string | null;
+  state_region: string | null;
+  country: string | null;
+}
+
+interface ApplicationRow {
+  id: string;
+  user_id: string;
+  company_name: string;
+  job_title: string;
+  job_description: string | null;
+}
+
+interface SelectedExperience {
+  role_title: string;
+  company_name: string;
+  location: string;
+  from_date: string;
+  to_date: string;
+  bullets: string[];
+}
+
+interface SelectedAcademic {
+  degree: string;
+  major: string;
+  school: string;
+  location: string;
+  from_date: string;
+  to_date: string;
+  bullets: string[];
+}
+
+interface SelectedSkill {
+  category: string;
+  bullets: string[];
+}
+
+interface AIResponse {
+  selected_experience: SelectedExperience[];
+  selected_academics: SelectedAcademic[];
+  selected_skills: SelectedSkill[];
+  personal_interests: string;
+}
+
+// ---------------------------------------------------------------------------
+// CORS / response helpers
+// ---------------------------------------------------------------------------
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+const jsonHeaders = { ...corsHeaders, "Content-Type": "application/json" };
+
+function jsonOk(body: Record<string, unknown>) {
+  return new Response(JSON.stringify(body), { status: 200, headers: jsonHeaders });
+}
+
+// ---------------------------------------------------------------------------
+// Retry helpers (same pattern as generate-cover-letter)
+// ---------------------------------------------------------------------------
+
+function delay(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function parseProviderErrorMessage(errText: string): string | null {
+  try {
+    const j = JSON.parse(errText) as { error?: { message?: string }; message?: string };
+    const m = j?.error?.message ?? j?.message;
+    if (typeof m === "string" && m.trim()) return m.trim().slice(0, 500);
+  } catch {
+    /* ignore */
+  }
+  const t = errText.trim();
+  return t ? t.slice(0, 400) : null;
+}
+
+function retryAfterMsFromResponse(res: Response, attemptIndex: number): number {
+  const ra = res.headers.get("retry-after");
+  if (ra) {
+    const sec = parseFloat(ra);
+    if (Number.isFinite(sec) && sec >= 0) return Math.min(Math.max(sec * 1000, 500), 25000);
+  }
+  return [2000, 5000, 10000][attemptIndex] ?? 8000;
+}
+
+function isTransientOverload(status: number, errText: string): boolean {
+  if (status === 429 || status === 500 || status === 503 || status === 504) return true;
+  const msg = (parseProviderErrorMessage(errText) ?? errText).toLowerCase();
+  return (
+    msg.includes("high demand") ||
+    msg.includes("overloaded") ||
+    msg.includes("temporarily unavailable") ||
+    msg.includes("try again later") ||
+    msg.includes("resource exhausted")
+  );
+}
+
+// ---------------------------------------------------------------------------
+// JSON parsing — strip markdown fences if present
+// ---------------------------------------------------------------------------
+
+function parseAIJson(raw: string): AIResponse {
+  let cleaned = raw.trim();
+  // Strip ```json ... ``` or ``` ... ``` wrappers
+  if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+  }
+  return JSON.parse(cleaned) as AIResponse;
+}
+
+// ---------------------------------------------------------------------------
+// AI call: Anthropic (primary)
+// ---------------------------------------------------------------------------
+
+async function callAnthropic(
+  apiKey: string,
+  model: string,
+  userPrompt: string,
+): Promise<{ ok: true; text: string } | { ok: false; error: string; code: string }> {
+  const url = "https://api.anthropic.com/v1/messages";
+  const headers = {
+    "x-api-key": apiKey,
+    "anthropic-version": "2023-06-01",
+    "Content-Type": "application/json",
+  };
+  const buildBody = () =>
+    JSON.stringify({
+      model,
+      max_tokens: 4096,
+      system: SYSTEM_MESSAGE,
+      messages: [{ role: "user", content: userPrompt }],
+    });
+
+  const doFetch = () => fetch(url, { method: "POST", headers, body: buildBody() });
+
+  let res = await doFetch();
+
+  // Retry on transient overload (up to 3 times)
+  let lastErrBody = "";
+  for (let attempt = 0; !res.ok && attempt < 3; attempt++) {
+    const errText = await res.text().catch(() => "");
+    if (!isTransientOverload(res.status, errText)) {
+      lastErrBody = errText;
+      break;
+    }
+    lastErrBody = errText;
+    console.warn(`Anthropic transient error (${res.status}), backoff attempt ${attempt + 1}:`, errText.slice(0, 200));
+    await delay(retryAfterMsFromResponse(res, attempt));
+    res = await doFetch();
+  }
+
+  if (!res.ok) {
+    const errText = (await res.text().catch(() => "")) || lastErrBody;
+    if (res.status === 429) {
+      const detail = parseProviderErrorMessage(errText);
+      return {
+        ok: false,
+        error: detail
+          ? `Anthropic rate-limited this request (429). ${detail} Wait and try again.`
+          : "Anthropic rate-limited this request (429). Wait 1–2 minutes and try again.",
+        code: "rate_limited",
+      };
+    }
+    if (isTransientOverload(res.status, errText)) {
+      return {
+        ok: false,
+        error: parseProviderErrorMessage(errText) ?? "Anthropic is temporarily overloaded. Please retry shortly.",
+        code: "provider_unavailable",
+      };
+    }
+    console.error("Anthropic error:", res.status, errText.slice(0, 800));
+    const hint = (parseProviderErrorMessage(errText) ?? errText.trim().slice(0, 400)) || `HTTP ${res.status}`;
+    return { ok: false, error: `AI generation failed: ${hint}`, code: "ai_provider" };
+  }
+
+  const data = await res.json() as {
+    content?: Array<{ type: string; text?: string }>;
+    error?: { message?: string };
+  };
+  const text = data.content?.find((c) => c.type === "text")?.text ?? "";
+  if (!text.trim()) {
+    return { ok: false, error: "No content returned by Anthropic", code: "empty_completion" };
+  }
+  return { ok: true, text };
+}
+
+// ---------------------------------------------------------------------------
+// AI call: Gemini (fallback)
+// ---------------------------------------------------------------------------
+
+async function callGemini(
+  apiKey: string,
+  model: string,
+  userPrompt: string,
+): Promise<{ ok: true; text: string } | { ok: false; error: string; code: string }> {
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}` +
+    `:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const buildBody = () =>
+    JSON.stringify({
+      systemInstruction: { parts: [{ text: SYSTEM_MESSAGE }] },
+      contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+      generationConfig: { temperature: 0, topP: 1, maxOutputTokens: 4096 },
+    });
+
+  const doFetch = () =>
+    fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: buildBody() });
+
+  let res = await doFetch();
+
+  let lastErrBody = "";
+  for (let attempt = 0; !res.ok && attempt < 3; attempt++) {
+    const errText = await res.text().catch(() => "");
+    if (!isTransientOverload(res.status, errText)) {
+      lastErrBody = errText;
+      break;
+    }
+    lastErrBody = errText;
+    console.warn(`Gemini transient error (${res.status}), backoff attempt ${attempt + 1}:`, errText.slice(0, 200));
+    await delay(retryAfterMsFromResponse(res, attempt));
+    res = await doFetch();
+  }
+
+  if (!res.ok) {
+    const errText = (await res.text().catch(() => "")) || lastErrBody;
+    if (res.status === 429) {
+      const detail = parseProviderErrorMessage(errText);
+      return {
+        ok: false,
+        error: detail
+          ? `Gemini rate-limited this request (429). ${detail} Wait and try again.`
+          : "Gemini rate-limited this request (429). Wait 1–2 minutes and try again.",
+        code: "rate_limited",
+      };
+    }
+    if (isTransientOverload(res.status, errText)) {
+      return {
+        ok: false,
+        error: parseProviderErrorMessage(errText) ?? "Gemini is temporarily overloaded. Please retry shortly.",
+        code: "provider_unavailable",
+      };
+    }
+    console.error("Gemini error:", res.status, errText.slice(0, 800));
+    const hint = (parseProviderErrorMessage(errText) ?? errText.trim().slice(0, 400)) || `HTTP ${res.status}`;
+    return { ok: false, error: `AI generation failed (Gemini): ${hint}`, code: "ai_provider" };
+  }
+
+  const data = await res.json() as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }>;
+    promptFeedback?: { blockReason?: string };
+  };
+
+  if (data.promptFeedback?.blockReason) {
+    return { ok: false, error: `Generation blocked by Gemini (${data.promptFeedback.blockReason}).`, code: "blocked" };
+  }
+
+  const parts = data.candidates?.[0]?.content?.parts ?? [];
+  const text = parts.map((p) => (typeof p.text === "string" ? p.text : "")).join("").trim();
+  if (!text) {
+    return { ok: false, error: "No content returned by Gemini", code: "empty_completion" };
+  }
+  return { ok: true, text };
+}
+
+// ---------------------------------------------------------------------------
+// HTML resume builder
+// ---------------------------------------------------------------------------
+
+function formatDate(dateStr: string | null | undefined): string {
+  if (!dateStr) return "";
+  // dateStr may be a date string like "2023-05-01" or "2023-05"
+  try {
+    const d = new Date(dateStr + (dateStr.length <= 7 ? "-01" : ""));
+    return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+  } catch {
+    return dateStr;
+  }
+}
+
+function esc(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function buildResumeHtml(
+  profile: { name: string; email: string; phone: string; location: string; linkedin: string },
+  aiData: AIResponse,
+): string {
+  const sectionHeader = (title: string) =>
+    `<div class="section-header"><span>${esc(title)}</span><hr /></div>`;
+
+  const dateLine = (from: string | null, to: string | null): string => {
+    const f = from ? formatDate(from) : "";
+    const t = to ? formatDate(to) : "Present";
+    if (!f && !t) return "";
+    if (!f) return esc(t);
+    return `${esc(f)} – ${esc(t)}`;
+  };
+
+  // Experience section
+  const experienceHtml = aiData.selected_experience.length === 0
+    ? ""
+    : `
+    ${sectionHeader("EXPERIENCE")}
+    ${aiData.selected_experience
+      .map(
+        (e) => `
+      <div class="entry">
+        <div class="entry-header">
+          <span class="entry-title">${esc(e.role_title)}</span>
+          <span class="entry-date">${dateLine(e.from_date, e.to_date)}</span>
+        </div>
+        <div class="entry-sub">${esc([e.company_name, e.location].filter(Boolean).join(" • "))}</div>
+        ${
+          e.bullets.length > 0
+            ? `<ul>${e.bullets.map((b) => `<li>${esc(b)}</li>`).join("")}</ul>`
+            : ""
+        }
+      </div>`,
+      )
+      .join("")}`;
+
+  // Academics section
+  const academicsHtml = aiData.selected_academics.length === 0
+    ? ""
+    : `
+    ${sectionHeader("EDUCATION")}
+    ${aiData.selected_academics
+      .map(
+        (a) => `
+      <div class="entry">
+        <div class="entry-header">
+          <span class="entry-title">${esc([a.degree, a.major].filter(Boolean).join(", "))}</span>
+          <span class="entry-date">${dateLine(a.from_date, a.to_date)}</span>
+        </div>
+        <div class="entry-sub">${esc([a.school, a.location].filter(Boolean).join(" • "))}</div>
+        ${
+          a.bullets.length > 0
+            ? `<ul>${a.bullets.map((b) => `<li>${esc(b)}</li>`).join("")}</ul>`
+            : ""
+        }
+      </div>`,
+      )
+      .join("")}`;
+
+  // Skills section
+  const skillsHtml = aiData.selected_skills.length === 0
+    ? ""
+    : `
+    ${sectionHeader("SKILLS & CERTIFICATIONS")}
+    <div class="skills-grid">
+      ${aiData.selected_skills
+        .map(
+          (s) => `
+        <div class="skill-category">
+          <span class="skill-label">${esc(s.category)}:</span>
+          <span class="skill-items">${s.bullets.map((b) => esc(b)).join(", ")}</span>
+        </div>`,
+        )
+        .join("")}
+    </div>`;
+
+  // Personal interests
+  const interestsHtml =
+    aiData.personal_interests && aiData.personal_interests.trim()
+      ? `
+    ${sectionHeader("PERSONAL INTERESTS")}
+    <p class="interests">${esc(aiData.personal_interests.trim())}</p>`
+      : "";
+
+  // Contact line pieces (only include non-empty)
+  const contactParts = [
+    profile.email,
+    profile.phone,
+    profile.location,
+    profile.linkedin,
+  ].filter(Boolean);
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Resume – ${esc(profile.name)}</title>
+  <style>
+    /* Reset */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 10.5pt;
+      color: #111;
+      background: #fff;
+      padding: 0.6in 0.65in;
+      line-height: 1.35;
+    }
+
+    /* Header */
+    .resume-name {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 22pt;
+      font-weight: bold;
+      text-transform: uppercase;
+      text-align: center;
+      letter-spacing: 0.04em;
+      margin-bottom: 4px;
+    }
+
+    .resume-contact {
+      text-align: center;
+      font-size: 9.5pt;
+      color: #333;
+      margin-bottom: 16px;
+    }
+
+    .resume-contact a {
+      color: #333;
+      text-decoration: none;
+    }
+
+    /* Section headers */
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 14px;
+      margin-bottom: 5px;
+    }
+
+    .section-header span {
+      font-weight: bold;
+      font-size: 9.5pt;
+      letter-spacing: 0.08em;
+      white-space: nowrap;
+    }
+
+    .section-header hr {
+      flex: 1;
+      border: none;
+      border-top: 1px solid #111;
+    }
+
+    /* Entry */
+    .entry {
+      margin-bottom: 9px;
+    }
+
+    .entry-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+
+    .entry-title {
+      font-weight: bold;
+      font-size: 10.5pt;
+    }
+
+    .entry-date {
+      font-size: 9.5pt;
+      color: #333;
+      white-space: nowrap;
+      margin-left: 8px;
+    }
+
+    .entry-sub {
+      font-size: 9.5pt;
+      color: #333;
+      margin-bottom: 3px;
+    }
+
+    ul {
+      margin-left: 18px;
+      margin-top: 2px;
+    }
+
+    ul li {
+      font-size: 10pt;
+      margin-bottom: 1px;
+    }
+
+    /* Skills */
+    .skills-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .skill-category {
+      font-size: 10pt;
+    }
+
+    .skill-label {
+      font-weight: bold;
+    }
+
+    .skill-items {
+      color: #111;
+    }
+
+    /* Interests */
+    .interests {
+      font-size: 10pt;
+      color: #222;
+    }
+  </style>
+</head>
+<body>
+  <div class="resume-name">${esc(profile.name)}</div>
+  <div class="resume-contact">${contactParts
+    .map((p) => {
+      if (p.startsWith("http") || p.includes("linkedin")) {
+        return `<a href="${esc(p)}" target="_blank">${esc(p)}</a>`;
+      }
+      return esc(p);
+    })
+    .join(" &nbsp;|&nbsp; ")}</div>
+
+  ${experienceHtml}
+  ${academicsHtml}
+  ${skillsHtml}
+  ${interestsHtml}
+</body>
+</html>`;
+}
+
+// ---------------------------------------------------------------------------
+// Main handler
+// ---------------------------------------------------------------------------
+
+serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+
+  try {
+    // --- Auth ---
+    const authHeader = req.headers.get("authorization");
+    if (!authHeader) throw new Error("Not authenticated");
+
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+
+    // User-scoped client (respects RLS)
+    const userClient = createClient(supabaseUrl, anonKey, {
+      global: { headers: { Authorization: authHeader } },
+    });
+
+    // Service-role client (bypasses RLS, used for storage upload)
+    const adminClient = createClient(supabaseUrl, serviceRoleKey);
+
+    const { data: { user }, error: authError } = await userClient.auth.getUser();
+    if (authError || !user) throw new Error("Invalid auth");
+
+    // --- Parse request ---
+    const body = await req.json();
+    const application_id = String(body.application_id ?? "").trim();
+    if (!application_id) {
+      return jsonOk({ ok: false, error: "Missing required field: application_id", code: "bad_request" });
+    }
+
+    // --- Environment variables ---
+    const anthropicApiKey = (Deno.env.get("ANTHROPIC_API_KEY") ?? "").trim();
+    const geminiApiKey = (Deno.env.get("GEMINI_API_KEY") ?? "").trim();
+    const anthropicModel = (Deno.env.get("ANTHROPIC_MODEL") ?? ANTHROPIC_MODEL_DEFAULT).trim() || ANTHROPIC_MODEL_DEFAULT;
+    const geminiModel = (Deno.env.get("GEMINI_MODEL") ?? GEMINI_MODEL_DEFAULT).trim() || GEMINI_MODEL_DEFAULT;
+    const runnerUrl = (Deno.env.get("JOBPAL_AUTOMATION_RUNNER_URL") ?? "").replace(/\/$/, "");
+    const runnerToken = (Deno.env.get("JOBPAL_AUTOMATION_RUNNER_TOKEN") ?? "").trim();
+
+    if (!geminiApiKey && !anthropicApiKey) {
+      return jsonOk({
+        ok: false,
+        error: "Neither GEMINI_API_KEY nor ANTHROPIC_API_KEY is configured. Set at least one secret on this Edge Function.",
+        code: "config_error",
+      });
+    }
+    if (!runnerUrl) {
+      return jsonOk({
+        ok: false,
+        error: "JOBPAL_AUTOMATION_RUNNER_URL is not configured.",
+        code: "config_error",
+      });
+    }
+
+    // --- Fetch application ---
+    const { data: appRow, error: appErr } = await userClient
+      .from("applications")
+      .select("id, user_id, company_name, job_title, job_description")
+      .eq("id", application_id)
+      .single();
+
+    if (appErr || !appRow) {
+      return jsonOk({
+        ok: false,
+        error: appErr?.message ?? "Application not found",
+        code: "not_found",
+      });
+    }
+    const app = appRow as ApplicationRow;
+
+    // --- Fetch profile ---
+    const { data: profileRow } = await userClient
+      .from("profiles")
+      .select("full_name, professional_email, phone, linkedin_url, city, state_region, country")
+      .eq("user_id", user.id)
+      .single();
+
+    const profile = profileRow as ProfileRow | null;
+
+    // Get user email from auth if professional_email not set
+    const authEmail = user.email ?? "";
+    const email = profile?.professional_email?.trim() || authEmail;
+    const phone = profile?.phone?.trim() ?? "";
+    const linkedin = profile?.linkedin_url?.trim() ?? "";
+    const locationParts = [profile?.city, profile?.state_region, profile?.country].filter(Boolean);
+    const location = locationParts.join(", ");
+    const fullName = profile?.full_name?.trim() || "Resume";
+
+    // --- Fetch resume_features ---
+    const { data: featuresRaw, error: featErr } = await userClient
+      .from("resume_features")
+      .select("id, user_id, feature_type, role_title, company, location, degree, major, from_date, to_date, description_lines, sort_order")
+      .eq("user_id", user.id)
+      .order("feature_type", { ascending: true })
+      .order("sort_order", { ascending: true });
+
+    if (featErr) {
+      return jsonOk({ ok: false, error: `Failed to fetch resume features: ${featErr.message}`, code: "db_error" });
+    }
+
+    const features = (featuresRaw ?? []) as ResumeFeatureRow[];
+
+    if (features.length === 0) {
+      return jsonOk({
+        ok: false,
+        error: "No resume features found. Please add your experience, education, and skills in the Resume Wizard before generating a tailored resume.",
+        code: "no_resume_data",
+      });
+    }
+
+    // Group features by type for the prompt
+    const grouped: Record<string, unknown[]> = {};
+    for (const f of features) {
+      const type = f.feature_type;
+      if (!grouped[type]) grouped[type] = [];
+      grouped[type].push({
+        role_title: f.role_title,
+        company_name: f.company,
+        location: f.location,
+        degree: f.degree,
+        major: f.major,
+        from_date: f.from_date,
+        to_date: f.to_date,
+        description_lines: f.description_lines,
+      });
+    }
+
+    // --- Build AI prompt ---
+    const userPrompt = `Job Title: ${app.job_title}
+Company: ${app.company_name}
+Job Description: ${app.job_description ?? "(none provided)"}
+
+Candidate's Resume Data:
+${JSON.stringify(grouped, null, 2)}
+
+Instructions:
+- Select the most relevant experience entries (up to 4, ordered by relevance)
+- For each experience entry, you may keep, trim, or rewrite bullets to emphasize relevance to this specific role
+- Select all academics entries (keep them all)
+- Select the most relevant skills categories (keep all, but reorder by relevance)
+- Include personal interests if present
+- Keep bullets concise (1-2 lines each)
+- Do NOT invent experience or skills not in the source data
+
+Return this exact JSON structure:
+{
+  "selected_experience": [{ "role_title": "...", "company_name": "...", "location": "...", "from_date": "...", "to_date": "...", "bullets": ["..."] }],
+  "selected_academics": [{ "degree": "...", "major": "...", "school": "...", "location": "...", "from_date": "...", "to_date": "...", "bullets": ["..."] }],
+  "selected_skills": [{ "category": "...", "bullets": ["..."] }],
+  "personal_interests": "..."
+}`;
+
+    // --- Call AI (Gemini primary, Anthropic fallback) ---
+    let aiResult: { ok: true; text: string } | { ok: false; error: string; code: string };
+
+    if (geminiApiKey) {
+      aiResult = await callGemini(geminiApiKey, geminiModel, userPrompt);
+      if (!aiResult.ok && aiResult.code === "provider_unavailable" && anthropicApiKey) {
+        console.warn("Gemini unavailable, falling back to Anthropic");
+        aiResult = await callAnthropic(anthropicApiKey, anthropicModel, userPrompt);
+      }
+    } else {
+      // No Gemini key — go straight to Anthropic
+      aiResult = await callAnthropic(anthropicApiKey, anthropicModel, userPrompt);
+    }
+
+    if (!aiResult.ok) {
+      return jsonOk({ ok: false, error: aiResult.error, code: aiResult.code });
+    }
+
+    // --- Parse AI JSON response ---
+    let aiData: AIResponse;
+    try {
+      aiData = parseAIJson(aiResult.text);
+    } catch (parseErr) {
+      console.error("Failed to parse AI JSON:", aiResult.text.slice(0, 500), parseErr);
+      return jsonOk({
+        ok: false,
+        error: "AI returned malformed JSON. Please try again.",
+        code: "parse_error",
+      });
+    }
+
+    // Ensure arrays are present (defensive defaults)
+    aiData.selected_experience = Array.isArray(aiData.selected_experience) ? aiData.selected_experience : [];
+    aiData.selected_academics = Array.isArray(aiData.selected_academics) ? aiData.selected_academics : [];
+    aiData.selected_skills = Array.isArray(aiData.selected_skills) ? aiData.selected_skills : [];
+    aiData.personal_interests = typeof aiData.personal_interests === "string" ? aiData.personal_interests : "";
+
+    // --- Build HTML ---
+    const htmlString = buildResumeHtml(
+      { name: fullName, email, phone, location, linkedin },
+      aiData,
+    );
+
+    // --- Call runner /generate-pdf ---
+    let pdfBytes: ArrayBuffer;
+    try {
+      const pdfRes = await fetch(`${runnerUrl}/generate-pdf`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${runnerToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ html: htmlString }),
+      });
+
+      if (!pdfRes.ok) {
+        const errText = await pdfRes.text().catch(() => "");
+        console.error("Runner /generate-pdf error:", pdfRes.status, errText.slice(0, 400));
+        return jsonOk({
+          ok: false,
+          error: `PDF generation failed (HTTP ${pdfRes.status}): ${errText.slice(0, 300) || "Unknown runner error"}`,
+          code: "pdf_generation_failed",
+        });
+      }
+
+      pdfBytes = await pdfRes.arrayBuffer();
+    } catch (runnerErr) {
+      console.error("Runner fetch error:", runnerErr);
+      return jsonOk({
+        ok: false,
+        error: `Runner unavailable: ${runnerErr instanceof Error ? runnerErr.message : String(runnerErr)}`,
+        code: "runner_unavailable",
+      });
+    }
+
+    // --- Upload to Supabase Storage (service role to bypass RLS) ---
+    const storagePath = `${user.id}/resumes/${application_id}/resume.pdf`;
+
+    const { error: uploadErr } = await adminClient.storage
+      .from("documents")
+      .upload(storagePath, pdfBytes, {
+        contentType: "application/pdf",
+        upsert: true,
+      });
+
+    if (uploadErr) {
+      console.error("Storage upload error:", uploadErr);
+      return jsonOk({
+        ok: false,
+        error: `Failed to upload PDF to storage: ${uploadErr.message}`,
+        code: "storage_upload_failed",
+      });
+    }
+
+    // --- Insert document record ---
+    // The documents table schema: id, user_id, name, type, file_path, file_size, version
+    // (from migration 20260408153722). We use file_path for the storage path and type='resume'.
+    const docInsertPayload: Record<string, unknown> = {
+      user_id: user.id,
+      name: "Tailored Resume",
+      type: "resume",
+      file_path: storagePath,
+    };
+
+    const { data: docRow, error: docInsertErr } = await userClient
+      .from("documents")
+      .insert(docInsertPayload)
+      .select("id")
+      .single();
+
+    if (docInsertErr || !docRow) {
+      console.error("Document insert error:", docInsertErr);
+      // Storage upload succeeded but DB insert failed — still return partial success with storage path
+      return jsonOk({
+        ok: false,
+        error: `PDF uploaded but document record could not be saved: ${docInsertErr?.message ?? "Unknown error"}`,
+        code: "db_insert_failed",
+        storage_path: storagePath,
+      });
+    }
+
+    const documentId = (docRow as { id: string }).id;
+
+    // --- Link document to application via application_documents ---
+    const { error: junctionErr } = await userClient
+      .from("application_documents")
+      .insert({
+        application_id,
+        document_id: documentId,
+        user_id: user.id,
+      });
+
+    if (junctionErr) {
+      // Log but don't fail — the document exists, the link is cosmetic
+      console.warn("application_documents insert error (non-fatal):", junctionErr);
+    }
+
+    // --- Log event ---
+    await userClient.from("application_events").insert({
+      application_id,
+      user_id: user.id,
+      event_type: "document_generated",
+      description: "Tailored resume generated with AI",
+    }).then(({ error: evErr }) => {
+      if (evErr) console.warn("application_events insert:", evErr);
+    });
+
+    return jsonOk({
+      ok: true,
+      storage_path: storagePath,
+      document_id: documentId,
+    });
+  } catch (e) {
+    console.error("Unexpected error:", e);
+    return jsonOk({
+      ok: false,
+      error: e instanceof Error ? e.message : "Unknown error",
+      code: "unexpected",
+    });
+  }
+});
