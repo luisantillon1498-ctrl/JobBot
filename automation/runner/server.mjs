@@ -695,6 +695,37 @@ const server = createServer(async (req, res) => {
       // Guard: refuse a new Playwright process if one is already paused in the
       // live browser. Two Chrome windows on the same Xvfb display cause a GPU
       // SEGV_MAPERR crash that kills both sessions.
+      //
+      // Before rejecting, auto-clean any sessions whose application has been
+      // deleted from Supabase. This handles the case where the frontend
+      // kill-on-delete call failed or wasn't reached (e.g. timing issues).
+      if (activeSessions.size > 0 && SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
+        for (const activeAppId of [...activeSessions.keys()]) {
+          try {
+            const checkRes = await fetch(
+              `${SUPABASE_URL}/rest/v1/applications?id=eq.${encodeURIComponent(activeAppId)}&select=id`,
+              { headers: { Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`, apikey: SUPABASE_SERVICE_ROLE_KEY } },
+            );
+            if (checkRes.ok) {
+              const rows = await checkRes.json();
+              if (!Array.isArray(rows) || rows.length === 0) {
+                // Application was deleted — kill the stale session automatically.
+                const stale = activeSessions.get(activeAppId);
+                if (stale) {
+                  console.log(`[runner] Auto-killing stale session for deleted app ${activeAppId}`);
+                  try { stale.proc.kill("SIGTERM"); } catch {}
+                  activeSessions.delete(activeAppId);
+                  for (const f of stale.cleanupPaths) fs.rm(f, { force: true }).catch(() => {});
+                  fs.rm(stale.tempDir, { recursive: true, force: true }).catch(() => {});
+                }
+              }
+            }
+          } catch (e) {
+            console.warn(`[runner] Could not verify app ${activeAppId} existence:`, e.message);
+          }
+        }
+      }
+
       if (activeSessions.size > 0) {
         const activeIds = [...activeSessions.keys()].join(", ");
         console.log(`[runner] Rejecting /run for ${payload.application_id} — active session(s) still in VNC: ${activeIds}`);
