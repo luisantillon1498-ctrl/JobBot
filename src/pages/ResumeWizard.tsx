@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
@@ -8,7 +8,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { ArrowUp, ArrowDown, Pencil, Trash2, X, Plus } from "lucide-react";
+import { ArrowUp, ArrowDown, Pencil, Trash2, X, Plus, Upload, FileText, CheckCircle2, AlertCircle } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -63,6 +64,26 @@ interface FeatureDraft {
   is_present: boolean;
   description_lines: string[];
 }
+
+interface ParsedEntry {
+  feature_type: FeatureType;
+  role_title: string;
+  company: string;
+  location: string;
+  degree: string;
+  major: string;
+  from_date: string | null;
+  to_date: string | null;
+  description_lines: string[];
+  sort_order: number;
+}
+
+type ImportState =
+  | { status: "idle" }
+  | { status: "parsing" }
+  | { status: "preview"; entries: ParsedEntry[] }
+  | { status: "saving" }
+  | { status: "error"; message: string };
 
 const emptyDraft = (): FeatureDraft => ({
   id: null,
@@ -859,6 +880,102 @@ export default function ResumeWizard() {
   const featuresForType = (type: FeatureType) =>
     features.filter((f) => f.feature_type === type);
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importState, setImportState] = useState<ImportState>({ status: "idle" });
+
+  const handleImportClick = () => fileInputRef.current?.click();
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Reset input so same file can be re-selected
+    if (e.target) e.target.value = "";
+    if (!file) return;
+    if (file.type !== "application/pdf") {
+      toast.error("Please select a PDF file.");
+      return;
+    }
+
+    setImportState({ status: "parsing" });
+
+    try {
+      // Read file as base64
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result as string;
+          // Strip "data:application/pdf;base64," prefix
+          resolve(result.split(",")[1]);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      const { data, error } = await supabase.functions.invoke("parse-resume", {
+        body: { pdf_base64: base64 },
+      });
+
+      if (error) throw new Error(error.message || "Edge Function error");
+      if (!data?.ok) throw new Error(data?.error || "Parse failed");
+
+      setImportState({ status: "preview", entries: data.entries as ParsedEntry[] });
+    } catch (err) {
+      setImportState({
+        status: "error",
+        message: err instanceof Error ? err.message : "An unexpected error occurred.",
+      });
+    }
+  };
+
+  const handleConfirmImport = async () => {
+    if (importState.status !== "preview") return;
+    const entries = importState.entries;
+    if (entries.length === 0) {
+      setImportState({ status: "idle" });
+      return;
+    }
+
+    setImportState({ status: "saving" });
+
+    // Compute starting sort_order for each type (append after existing)
+    const maxSortByType: Record<string, number> = {};
+    for (const f of features) {
+      const cur = maxSortByType[f.feature_type] ?? -1;
+      if (f.sort_order > cur) maxSortByType[f.feature_type] = f.sort_order;
+    }
+
+    const rows = entries.map((entry) => {
+      const base = maxSortByType[entry.feature_type] ?? -1;
+      const newOrder = base + 1 + entry.sort_order;
+      return {
+        user_id: user!.id,
+        feature_type: entry.feature_type,
+        role_title: entry.role_title,
+        company: entry.company,
+        location: entry.location,
+        degree: entry.degree,
+        major: entry.major,
+        from_date: entry.from_date,
+        to_date: entry.to_date,
+        description_lines: entry.description_lines,
+        sort_order: newOrder,
+      };
+    });
+
+    const { error } = await supabase.from("resume_features").insert(rows);
+
+    if (error) {
+      toast.error(error.message || "Could not save imported entries.");
+      setImportState({ status: "preview", entries });
+      return;
+    }
+
+    toast.success(`${entries.length} entries imported successfully.`);
+    setImportState({ status: "idle" });
+    loadFeatures();
+  };
+
+  const handleCancelImport = () => setImportState({ status: "idle" });
+
   return (
     <AppLayout>
       <div className="space-y-6 max-w-3xl">
@@ -868,6 +985,129 @@ export default function ResumeWizard() {
             Build your structured resume content. This data can be used to tailor applications.
           </p>
         </div>
+
+        {/* Hidden file input */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="application/pdf"
+          className="hidden"
+          onChange={handleFileChange}
+        />
+
+        {/* Import banner / status */}
+        {importState.status === "idle" && (
+          <div className="flex items-center justify-between rounded-lg border border-dashed border-border px-4 py-3">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <FileText className="h-4 w-4" />
+              <span>Have an existing resume? Import it automatically.</span>
+            </div>
+            <Button type="button" variant="outline" size="sm" onClick={handleImportClick}>
+              <Upload className="h-3.5 w-3.5 mr-1.5" />
+              Import from PDF
+            </Button>
+          </div>
+        )}
+
+        {importState.status === "parsing" && (
+          <div className="flex items-center gap-3 rounded-lg border border-border px-4 py-3 bg-muted/40">
+            <div className="h-4 w-4 rounded-full border-2 border-primary border-t-transparent animate-spin shrink-0" />
+            <p className="text-sm text-muted-foreground">Reading your resume with AI… this may take 15–30 seconds.</p>
+          </div>
+        )}
+
+        {importState.status === "error" && (
+          <div className="flex items-start gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3">
+            <AlertCircle className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-destructive">Import failed</p>
+              <p className="text-sm text-muted-foreground mt-0.5">{importState.message}</p>
+            </div>
+            <Button type="button" variant="ghost" size="sm" onClick={handleCancelImport}>Dismiss</Button>
+            <Button type="button" variant="outline" size="sm" onClick={handleImportClick}>Try again</Button>
+          </div>
+        )}
+
+        {(importState.status === "preview" || importState.status === "saving") && (
+          <div className="rounded-lg border border-border bg-muted/20">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400" />
+                <span className="text-sm font-medium">
+                  {importState.status === "preview"
+                    ? `${importState.entries.length} entries ready to import`
+                    : "Saving…"}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleCancelImport}
+                  disabled={importState.status === "saving"}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleConfirmImport}
+                  disabled={importState.status === "saving"}
+                >
+                  {importState.status === "saving" ? "Importing…" : "Confirm Import"}
+                </Button>
+              </div>
+            </div>
+            {importState.status === "preview" && (
+              <div className="divide-y divide-border">
+                {SECTIONS.map((section) => {
+                  const sectionEntries = importState.entries.filter((e) => e.feature_type === section.type);
+                  if (sectionEntries.length === 0) return null;
+                  return (
+                    <div key={section.type} className="px-4 py-3">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{section.label}</span>
+                        <Badge variant="secondary" className="text-xs">{sectionEntries.length}</Badge>
+                      </div>
+                      <div className="space-y-2">
+                        {sectionEntries.map((entry, i) => {
+                          const primary =
+                            section.type === "academics"
+                              ? [entry.degree, entry.major].filter(Boolean).join(" — ") || entry.company
+                              : entry.role_title;
+                          const secondary =
+                            section.type === "academics" ? entry.company : entry.company;
+                          return (
+                            <div key={i} className="text-sm">
+                              <span className="font-medium">{primary}</span>
+                              {secondary && <span className="text-muted-foreground"> · {secondary}</span>}
+                              {entry.location && <span className="text-muted-foreground"> · {entry.location}</span>}
+                              {entry.description_lines.length > 0 && (
+                                <ul className="mt-1 space-y-0.5 ml-3">
+                                  {entry.description_lines.slice(0, 3).map((line, li) => (
+                                    <li key={li} className="text-muted-foreground text-xs flex gap-1">
+                                      <span>•</span><span>{line}</span>
+                                    </li>
+                                  ))}
+                                  {entry.description_lines.length > 3 && (
+                                    <li className="text-muted-foreground text-xs italic">
+                                      +{entry.description_lines.length - 3} more bullets…
+                                    </li>
+                                  )}
+                                </ul>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
         {profileLoading ? (
           <p className="text-sm text-muted-foreground">Loading profile…</p>
