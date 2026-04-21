@@ -16,13 +16,17 @@ type FeatureType =
   | "professional_experience"
   | "academics"
   | "extracurriculars"
-  | "skills_and_certifications";
+  | "skills_and_certifications"
+  | "personal";
 
 interface ResumeFeature {
   id: string;
   user_id: string;
   role_title: string;
   company: string;
+  location: string;
+  degree: string;
+  major: string;
   from_date: string | null;
   to_date: string | null;
   feature_type: string;
@@ -51,6 +55,9 @@ interface FeatureDraft {
   id: string | null; // null = new
   role_title: string;
   company: string;
+  location: string;
+  degree: string;
+  major: string;
   from_date: string; // "YYYY-MM" or ""
   to_date: string; // "YYYY-MM" or ""
   is_present: boolean;
@@ -61,6 +68,9 @@ const emptyDraft = (): FeatureDraft => ({
   id: null,
   role_title: "",
   company: "",
+  location: "",
+  degree: "",
+  major: "",
   from_date: "",
   to_date: "",
   is_present: false,
@@ -74,6 +84,9 @@ function draftFromFeature(f: ResumeFeature): FeatureDraft {
     id: f.id,
     role_title: f.role_title,
     company: f.company,
+    location: f.location ?? "",
+    degree: f.degree ?? "",
+    major: f.major ?? "",
     from_date: toMonth(f.from_date),
     to_date: f.to_date ? toMonth(f.to_date) : "",
     is_present: f.to_date === null,
@@ -88,6 +101,7 @@ const SECTIONS: { type: FeatureType; label: string }[] = [
   { type: "academics", label: "Academics" },
   { type: "extracurriculars", label: "Extracurriculars" },
   { type: "skills_and_certifications", label: "Skills & Certifications" },
+  { type: "personal", label: "Personal" },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -142,13 +156,14 @@ function BioCard({ profile }: { profile: Profile | null }) {
 
 interface FeatureFormProps {
   draft: FeatureDraft;
+  featureType: FeatureType;
   onChange: (d: FeatureDraft) => void;
   onSave: () => void;
   onCancel: () => void;
   saving: boolean;
 }
 
-function FeatureForm({ draft, onChange, onSave, onCancel, saving }: FeatureFormProps) {
+function FeatureForm({ draft, featureType, onChange, onSave, onCancel, saving }: FeatureFormProps) {
   const set = (patch: Partial<FeatureDraft>) => onChange({ ...draft, ...patch });
 
   const updateLine = (i: number, value: string) => {
@@ -164,6 +179,213 @@ function FeatureForm({ draft, onChange, onSave, onCancel, saving }: FeatureFormP
     set({ description_lines: lines.length > 0 ? lines : [""] });
   };
 
+  // ── personal: single interests field only ────────────────────────────────
+  if (featureType === "personal") {
+    return (
+      <div className="border border-border rounded-lg p-4 mt-3 space-y-4 bg-muted/30">
+        <div className="space-y-1.5">
+          <Label htmlFor="rw-role-title">Interests</Label>
+          <Input
+            id="rw-role-title"
+            value={draft.role_title}
+            onChange={(e) => set({ role_title: e.target.value })}
+            placeholder="Skiing, Tennis, Hiking…"
+          />
+        </div>
+        <div className="flex items-center gap-2 pt-1">
+          <Button type="button" onClick={onSave} disabled={saving}>
+            {saving ? "Saving…" : "Save"}
+          </Button>
+          <Button type="button" variant="outline" onClick={onCancel} disabled={saving}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── skills_and_certifications: category + bullets only ───────────────────
+  if (featureType === "skills_and_certifications") {
+    return (
+      <div className="border border-border rounded-lg p-4 mt-3 space-y-4 bg-muted/30">
+        <div className="space-y-1.5">
+          <Label htmlFor="rw-role-title">Category</Label>
+          <Input
+            id="rw-role-title"
+            value={draft.role_title}
+            onChange={(e) => set({ role_title: e.target.value })}
+            placeholder="Technical Skills"
+          />
+        </div>
+
+        <div className="space-y-2">
+          <Label>Description bullets</Label>
+          <div className="space-y-2">
+            {draft.description_lines.map((line, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <span className="text-muted-foreground shrink-0 select-none">•</span>
+                <Input
+                  value={line}
+                  onChange={(e) => updateLine(i, e.target.value)}
+                  placeholder="Describe what you did…"
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
+                  onClick={() => removeLine(i)}
+                  aria-label="Remove bullet"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            ))}
+          </div>
+          <Button type="button" variant="outline" size="sm" onClick={addLine}>
+            <Plus className="h-3.5 w-3.5 mr-1.5" />
+            Add bullet
+          </Button>
+        </div>
+
+        <div className="flex items-center gap-2 pt-1">
+          <Button type="button" onClick={onSave} disabled={saving}>
+            {saving ? "Saving…" : "Save"}
+          </Button>
+          <Button type="button" variant="outline" onClick={onCancel} disabled={saving}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── academics: degree/major instead of role_title, school, location ──────
+  if (featureType === "academics") {
+    return (
+      <div className="border border-border rounded-lg p-4 mt-3 space-y-4 bg-muted/30">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="rw-degree">Degree</Label>
+            <Input
+              id="rw-degree"
+              value={draft.degree}
+              onChange={(e) => set({ degree: e.target.value })}
+              placeholder="Master of Business Administration"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="rw-major">Major / Field of Study</Label>
+            <Input
+              id="rw-major"
+              value={draft.major}
+              onChange={(e) => set({ major: e.target.value })}
+              placeholder="Mechanical Engineering, Computer Science"
+            />
+          </div>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="rw-company">School / Institution</Label>
+            <Input
+              id="rw-company"
+              value={draft.company}
+              onChange={(e) => set({ company: e.target.value })}
+              placeholder="Harvard University"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="rw-location">Location</Label>
+            <Input
+              id="rw-location"
+              value={draft.location}
+              onChange={(e) => set({ location: e.target.value })}
+              placeholder="Boston, MA"
+            />
+          </div>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="rw-from-date">From</Label>
+            <input
+              id="rw-from-date"
+              type="month"
+              value={draft.from_date}
+              onChange={(e) => set({ from_date: e.target.value })}
+              className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="rw-to-date">To</Label>
+            <div className="space-y-2">
+              <input
+                id="rw-to-date"
+                type="month"
+                value={draft.is_present ? "" : draft.to_date}
+                onChange={(e) => set({ to_date: e.target.value })}
+                disabled={draft.is_present}
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
+              />
+              <label className="flex items-center gap-2 cursor-pointer text-sm text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={draft.is_present}
+                  onChange={(e) => set({ is_present: e.target.checked, to_date: e.target.checked ? "" : draft.to_date })}
+                  className="h-4 w-4 rounded border-input accent-primary"
+                />
+                Present
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label>Description bullets</Label>
+          <div className="space-y-2">
+            {draft.description_lines.map((line, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <span className="text-muted-foreground shrink-0 select-none">•</span>
+                <Input
+                  value={line}
+                  onChange={(e) => updateLine(i, e.target.value)}
+                  placeholder="Describe what you did…"
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
+                  onClick={() => removeLine(i)}
+                  aria-label="Remove bullet"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            ))}
+          </div>
+          <Button type="button" variant="outline" size="sm" onClick={addLine}>
+            <Plus className="h-3.5 w-3.5 mr-1.5" />
+            Add bullet
+          </Button>
+        </div>
+
+        <div className="flex items-center gap-2 pt-1">
+          <Button type="button" onClick={onSave} disabled={saving}>
+            {saving ? "Saving…" : "Save"}
+          </Button>
+          <Button type="button" variant="outline" onClick={onCancel} disabled={saving}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── professional_experience / extracurriculars: role, company, location ──
   return (
     <div className="border border-border rounded-lg p-4 mt-3 space-y-4 bg-muted/30">
       <div className="grid gap-4 sm:grid-cols-2">
@@ -183,6 +405,18 @@ function FeatureForm({ draft, onChange, onSave, onCancel, saving }: FeatureFormP
             value={draft.company}
             onChange={(e) => set({ company: e.target.value })}
             placeholder="Acme Corp"
+          />
+        </div>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label htmlFor="rw-location">Location</Label>
+          <Input
+            id="rw-location"
+            value={draft.location}
+            onChange={(e) => set({ location: e.target.value })}
+            placeholder="San Francisco, CA"
           />
         </div>
       </div>
@@ -265,6 +499,60 @@ function FeatureForm({ draft, onChange, onSave, onCancel, saving }: FeatureFormP
   );
 }
 
+// ─── Feature row (read-only display) ─────────────────────────────────────────
+
+function FeatureRowDisplay({ f, featureType }: { f: ResumeFeature; featureType: FeatureType }) {
+  // Determine primary label
+  let primaryLabel: React.ReactNode;
+  if (featureType === "academics") {
+    const degreeAndMajor = [f.degree, f.major].filter(Boolean).join(" — ");
+    primaryLabel = degreeAndMajor || <span className="italic text-muted-foreground">Untitled</span>;
+  } else {
+    primaryLabel = f.role_title || <span className="italic text-muted-foreground">Untitled</span>;
+  }
+
+  // Secondary label (company / school)
+  const showCompany = featureType !== "personal" && featureType !== "skills_and_certifications";
+  const companyLabel =
+    featureType === "academics"
+      ? f.company // school name
+      : f.company;
+
+  // Show dates? Not for personal or skills
+  const showDates = featureType !== "personal" && featureType !== "skills_and_certifications";
+
+  return (
+    <div className="flex-1 min-w-0">
+      <div className="flex flex-wrap items-baseline gap-x-2">
+        <span className="font-medium text-foreground text-sm">{primaryLabel}</span>
+        {showCompany && companyLabel && (
+          <span className="text-muted-foreground text-sm">{companyLabel}</span>
+        )}
+      </div>
+      {f.location && (
+        <p className="text-xs text-muted-foreground mt-0.5">{f.location}</p>
+      )}
+      {showDates && (f.from_date || f.to_date !== undefined) && (
+        <p className="text-xs text-muted-foreground mt-0.5">
+          {formatMonthYear(f.from_date)}
+          {f.from_date || f.to_date !== null ? " – " : ""}
+          {f.to_date === null ? "Present" : formatMonthYear(f.to_date)}
+        </p>
+      )}
+      {f.description_lines.length > 0 && (
+        <ul className="mt-1.5 space-y-0.5">
+          {f.description_lines.map((line, li) => (
+            <li key={li} className="text-sm text-muted-foreground flex gap-1.5">
+              <span className="shrink-0 mt-px">•</span>
+              <span>{line}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 interface SectionCardProps {
   label: string;
   featureType: FeatureType;
@@ -295,10 +583,25 @@ function SectionCard({ label, featureType, features, onSaved, userId }: SectionC
   };
 
   const save = async () => {
-    if (!draft.role_title.trim() && !draft.company.trim()) {
+    // Validation: personal only needs role_title; academics needs degree or company; others need role or company
+    if (featureType === "personal" && !draft.role_title.trim()) {
+      toast.error("Enter at least one interest.");
+      return;
+    }
+    if (featureType === "academics" && !draft.degree.trim() && !draft.company.trim()) {
+      toast.error("Enter at least a degree or school name.");
+      return;
+    }
+    if (
+      featureType !== "personal" &&
+      featureType !== "academics" &&
+      !draft.role_title.trim() &&
+      !draft.company.trim()
+    ) {
       toast.error("Enter at least a role title or company name.");
       return;
     }
+
     setSaving(true);
 
     // "YYYY-MM" → "YYYY-MM-01" for the DB date column
@@ -311,6 +614,9 @@ function SectionCard({ label, featureType, features, onSaved, userId }: SectionC
       user_id: userId,
       role_title: draft.role_title.trim(),
       company: draft.company.trim(),
+      location: draft.location.trim(),
+      degree: draft.degree.trim(),
+      major: draft.major.trim(),
       from_date: toDateStr(draft.from_date),
       to_date: draft.is_present ? null : toDateStr(draft.to_date),
       feature_type: featureType,
@@ -348,7 +654,11 @@ function SectionCard({ label, featureType, features, onSaved, userId }: SectionC
   };
 
   const deleteFeature = async (f: ResumeFeature) => {
-    if (!window.confirm(`Delete "${f.role_title || f.company}"? This cannot be undone.`)) return;
+    const label =
+      featureType === "academics"
+        ? f.degree || f.company || "this entry"
+        : f.role_title || f.company || "this entry";
+    if (!window.confirm(`Delete "${label}"? This cannot be undone.`)) return;
     const { error } = await supabase.from("resume_features").delete().eq("id", f.id);
     if (error) {
       toast.error(error.message || "Could not delete entry.");
@@ -433,34 +743,8 @@ function SectionCard({ label, featureType, features, onSaved, userId }: SectionC
                   </Button>
                 </div>
 
-                {/* Feature content */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex flex-wrap items-baseline gap-x-2">
-                    <span className="font-medium text-foreground text-sm">
-                      {f.role_title || <span className="italic text-muted-foreground">Untitled</span>}
-                    </span>
-                    {f.company && (
-                      <span className="text-muted-foreground text-sm">{f.company}</span>
-                    )}
-                  </div>
-                  {(f.from_date || f.to_date !== undefined) && (
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      {formatMonthYear(f.from_date)}
-                      {f.from_date || f.to_date !== null ? " – " : ""}
-                      {f.to_date === null ? "Present" : formatMonthYear(f.to_date)}
-                    </p>
-                  )}
-                  {f.description_lines.length > 0 && (
-                    <ul className="mt-1.5 space-y-0.5">
-                      {f.description_lines.map((line, li) => (
-                        <li key={li} className="text-sm text-muted-foreground flex gap-1.5">
-                          <span className="shrink-0 mt-px">•</span>
-                          <span>{line}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
+                {/* Feature content (read-only) */}
+                <FeatureRowDisplay f={f} featureType={featureType} />
 
                 {/* Action buttons */}
                 <div className="flex items-center gap-1 shrink-0">
@@ -491,6 +775,7 @@ function SectionCard({ label, featureType, features, onSaved, userId }: SectionC
               {editingId === f.id && (
                 <FeatureForm
                   draft={draft}
+                  featureType={featureType}
                   onChange={setDraft}
                   onSave={save}
                   onCancel={cancel}
@@ -506,6 +791,7 @@ function SectionCard({ label, featureType, features, onSaved, userId }: SectionC
           <div className={features.length > 0 ? "border-t border-border" : ""}>
             <FeatureForm
               draft={draft}
+              featureType={featureType}
               onChange={setDraft}
               onSave={save}
               onCancel={cancel}
