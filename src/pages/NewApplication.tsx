@@ -176,6 +176,13 @@ export default function NewApplication() {
       });
 
       toast.success("Application created");
+
+      // Fire-and-forget: generate a tailored resume in the background
+      toast.info("Generating tailored resume in the background…");
+      supabase.functions
+        .invoke("generate-resume", { body: { application_id: data.id } })
+        .catch(() => {/* non-fatal */});
+
       navigate(`/applications/${data.id}`);
     } finally {
       setSaving(false);

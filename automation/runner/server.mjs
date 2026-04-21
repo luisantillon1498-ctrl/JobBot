@@ -6,6 +6,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import net from "node:net";
+import { chromium } from "playwright";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const RUNNER_TOKEN = process.env.JOBPAL_AUTOMATION_RUNNER_TOKEN?.trim() || "";
@@ -814,6 +815,36 @@ const server = createServer(async (req, res) => {
     } catch (error) {
       return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : "Kill session failed" });
     }
+  }
+
+  // POST /generate-pdf — render HTML to PDF using headless Playwright
+  if (req.method === "POST" && req.url === "/generate-pdf") {
+    try {
+      if (shouldRejectForAuth(req)) return sendJson(res, 401, { error: "Unauthorized runner token" });
+
+      const body = await readJsonBody(req);
+      if (typeof body.html !== "string" || !body.html.trim()) {
+        return sendJson(res, 400, { error: "Missing required field: html" });
+      }
+
+      const browser = await chromium.launch({ headless: true });
+      try {
+        const page = await browser.newPage();
+        await page.setContent(body.html, { waitUntil: "networkidle" });
+        const pdfBuffer = await page.pdf({
+          format: "Letter",
+          margin: { top: "0.75in", right: "1in", bottom: "0.75in", left: "1in" },
+          printBackground: true,
+        });
+        res.writeHead(200, { "Content-Type": "application/pdf", "Content-Length": pdfBuffer.length });
+        res.end(pdfBuffer);
+      } finally {
+        await browser.close();
+      }
+    } catch (error) {
+      return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : "PDF generation failed" });
+    }
+    return;
   }
 
   return sendJson(res, 404, { error: "Not found" });

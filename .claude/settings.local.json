@@ -4,7 +4,26 @@
       "Bash(xargs wc:*)",
       "Bash(find src/pages -type f -name \"*.tsx\" -exec wc -l {} \\\\;)",
       "Bash(wc -l automation/lib/*.ts automation/runner/*.mjs automation/types.ts)",
-      "mcp__Claude_Preview__preview_start"
+      "mcp__Claude_Preview__preview_start",
+      "Bash(node --input-type=module --eval \"import\\('./automation/runner/server.mjs'\\).then\\(\\(\\) => {}\\).catch\\(e => console.error\\('Parse error:', e.message\\)\\)\")",
+      "Bash(node --check automation/runner/server.mjs)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(npx tsc:*)",
+      "Bash(dir \"C:\\\\Users\\\\luisa\\\\OneDrive - Harvard Business School\\\\Coursework\\\\RCSpring\\\\DSAIL\\\\JobPal Pro\\\\supabase\\\\migrations\" /B /O:N)",
+      "Bash(npx supabase:*)",
+      "WebFetch(domain:blog.castle.io)",
+      "WebFetch(domain:kameleo.io)",
+      "WebFetch(domain:dev.to)",
+      "WebFetch(domain:scrapfly.io)",
+      "WebFetch(domain:www.zenrows.com)",
+      "WebFetch(domain:developers.ashbyhq.com)",
+      "WebFetch(domain:www.ashbyhq.com)",
+      "WebFetch(domain:alterlab.io)",
+      "WebFetch(domain:scrapeops.io)",
+      "WebFetch(domain:jobs.ashbyhq.com)",
+      "Bash(echo \"EXIT_CODE:$?\")",
+      "Bash(npm run:*)"
     ]
   }
 }
