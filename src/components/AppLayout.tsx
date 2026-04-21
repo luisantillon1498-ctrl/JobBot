@@ -1,7 +1,7 @@
 import { ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
-import { LayoutDashboard, FolderOpen, ListOrdered, PlusCircle, BarChart3, LogOut, Bot, Settings } from "lucide-react";
+import { LayoutDashboard, FolderOpen, ListOrdered, PlusCircle, BarChart3, LogOut, Bot, Settings, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const navItems = [
@@ -10,6 +10,7 @@ const navItems = [
   { to: "/applications/new", label: "New Application", icon: PlusCircle },
   { to: "/applications/queue", label: "Application Queue", icon: ListOrdered },
   { to: "/analytics", label: "Analytics", icon: BarChart3 },
+  { to: "/resume-wizard", label: "Resume Wizard", icon: FileText },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 

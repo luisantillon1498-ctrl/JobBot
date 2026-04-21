@@ -16,6 +16,7 @@ import ApplicationDetail from "./pages/ApplicationDetail";
 import ApplicationQueue from "./pages/ApplicationQueue";
 import Analytics from "./pages/Analytics";
 import Settings from "./pages/Settings";
+import ResumeWizard from "@/pages/ResumeWizard";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -92,6 +93,7 @@ const App = () => (
               <Route path="/applications/:id" element={<ProtectedRoute><ApplicationDetail /></ProtectedRoute>} />
               <Route path="/analytics" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
               <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+              <Route path="/resume-wizard" element={<ProtectedRoute><ResumeWizard /></ProtectedRoute>} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </BrowserRouter>

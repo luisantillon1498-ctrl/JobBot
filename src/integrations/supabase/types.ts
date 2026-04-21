@@ -6,54 +6,6 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[]
 
-/** Matches public.application_events.event_type CHECK constraint */
-export type ApplicationEventType =
-  | "status_change"
-  | "note"
-  | "interview_scheduled"
-  | "document_generated"
-  | "follow_up"
-  | "outcome_change"
-  | "automation_status"
-
-/** Matches public.documents.type CHECK constraint */
-export type DocumentType = "resume" | "cover_letter_template" | "other"
-
-/** Matches public.applications.application_status CHECK constraint */
-export type ApplicationStatus =
-  | "not_started"
-  | "screening"
-  | "first_round_interview"
-  | "second_round_interview"
-  | "final_round_interview"
-
-/** Matches public.applications.submission_status CHECK constraint */
-export type ApplicationSubmissionStatus = "draft" | "submitted"
-
-/**
- * JobBot execution state machine (public.applications.automation_queue_state / automation_last_outcome).
- * Transitions should be logged with application_events.event_type = 'automation_status' and metadata.
- */
-export type ApplicationAutomationQueueState =
-  | "queued"
-  | "autofilling"
-  | "waiting_for_human_action"
-  | "human_action_completed"
-  | "waiting_for_review"
-  | "ready_to_submit"
-  | "submitted"
-  | "failed"
-
-/** Matches UI outcomes (outcome is nullable text in DB) */
-export type ApplicationOutcome = "rejected" | "withdrew" | "offer_accepted" | "ghosted"
-
-/** Matches public.generated_artifacts.type CHECK constraint */
-export type GeneratedArtifactType =
-  | "cover_letter"
-  | "tailored_resume"
-  | "follow_up_email"
-  | "thank_you_note"
-
 export type Database = {
   // Allows to automatically instantiate createClient with right options
   // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
@@ -62,6 +14,68 @@ export type Database = {
   }
   public: {
     Tables: {
+      application_automation_sessions: {
+        Row: {
+          application_id: string
+          created_at: string
+          ended_at: string | null
+          handoff_completed_at: string | null
+          handoff_reason: string | null
+          handoff_required_at: string | null
+          id: string
+          metadata: Json
+          run_log: Json
+          screenshot_storage_paths: Json
+          started_at: string
+          steel_live_url: string | null
+          steel_session_id: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          application_id: string
+          created_at?: string
+          ended_at?: string | null
+          handoff_completed_at?: string | null
+          handoff_reason?: string | null
+          handoff_required_at?: string | null
+          id?: string
+          metadata?: Json
+          run_log?: Json
+          screenshot_storage_paths?: Json
+          started_at?: string
+          steel_live_url?: string | null
+          steel_session_id?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          application_id?: string
+          created_at?: string
+          ended_at?: string | null
+          handoff_completed_at?: string | null
+          handoff_reason?: string | null
+          handoff_required_at?: string | null
+          id?: string
+          metadata?: Json
+          run_log?: Json
+          screenshot_storage_paths?: Json
+          started_at?: string
+          steel_live_url?: string | null
+          steel_session_id?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "application_automation_sessions_application_id_fkey"
+            columns: ["application_id"]
+            isOneToOne: false
+            referencedRelation: "applications"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       application_documents: {
         Row: {
           application_id: string
@@ -101,68 +115,12 @@ export type Database = {
           },
         ]
       }
-      application_automation_sessions: {
-        Row: {
-          application_id: string
-          created_at: string
-          ended_at: string | null
-          handoff_completed_at: string | null
-          handoff_reason: string | null
-          handoff_required_at: string | null
-          id: string
-          metadata: Json
-          run_log: Json
-          screenshot_storage_paths: Json
-          started_at: string
-          updated_at: string
-          user_id: string
-        }
-        Insert: {
-          application_id: string
-          created_at?: string
-          ended_at?: string | null
-          handoff_completed_at?: string | null
-          handoff_reason?: string | null
-          handoff_required_at?: string | null
-          id?: string
-          metadata?: Json
-          run_log?: Json
-          screenshot_storage_paths?: Json
-          started_at?: string
-          updated_at?: string
-          user_id: string
-        }
-        Update: {
-          application_id?: string
-          created_at?: string
-          ended_at?: string | null
-          handoff_completed_at?: string | null
-          handoff_reason?: string | null
-          handoff_required_at?: string | null
-          id?: string
-          metadata?: Json
-          run_log?: Json
-          screenshot_storage_paths?: Json
-          started_at?: string
-          updated_at?: string
-          user_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "application_automation_sessions_application_id_fkey"
-            columns: ["application_id"]
-            isOneToOne: false
-            referencedRelation: "applications"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       application_events: {
         Row: {
           application_id: string
           created_at: string
           description: string
-          event_type: ApplicationEventType
+          event_type: string
           id: string
           metadata: Json | null
           user_id: string
@@ -171,7 +129,7 @@ export type Database = {
           application_id: string
           created_at?: string
           description: string
-          event_type: ApplicationEventType
+          event_type: string
           id?: string
           metadata?: Json | null
           user_id: string
@@ -180,7 +138,7 @@ export type Database = {
           application_id?: string
           created_at?: string
           description?: string
-          event_type?: ApplicationEventType
+          event_type?: string
           id?: string
           metadata?: Json | null
           user_id?: string
@@ -197,16 +155,17 @@ export type Database = {
       }
       applications: {
         Row: {
+          application_status: string
+          applied_at: string | null
           automation_active_session_id: string | null
           automation_last_context: Json
           automation_last_error: string | null
-          automation_last_outcome: ApplicationAutomationQueueState | null
+          automation_last_outcome: string | null
+          automation_last_run_at: string | null
+          automation_live_url: string | null
           automation_queue_excluded: boolean
           automation_queue_priority: number
-          automation_last_run_at: string | null
-          automation_queue_state: ApplicationAutomationQueueState
-          application_status: ApplicationStatus
-          applied_at: string | null
+          automation_queue_state: string
           company_name: string
           created_at: string
           id: string
@@ -215,25 +174,26 @@ export type Database = {
           job_url: string | null
           location: string | null
           notes: string | null
-          outcome: ApplicationOutcome | null
+          outcome: string | null
           salary_range: string | null
-          submission_status: ApplicationSubmissionStatus
+          submission_status: string
           submitted_cover_document_id: string | null
           submitted_resume_document_id: string | null
           updated_at: string
           user_id: string
         }
         Insert: {
+          application_status?: string
+          applied_at?: string | null
           automation_active_session_id?: string | null
           automation_last_context?: Json
           automation_last_error?: string | null
-          automation_last_outcome?: ApplicationAutomationQueueState | null
+          automation_last_outcome?: string | null
+          automation_last_run_at?: string | null
+          automation_live_url?: string | null
           automation_queue_excluded?: boolean
           automation_queue_priority?: number
-          automation_last_run_at?: string | null
-          automation_queue_state?: ApplicationAutomationQueueState
-          application_status?: ApplicationStatus
-          applied_at?: string | null
+          automation_queue_state?: string
           company_name: string
           created_at?: string
           id?: string
@@ -242,25 +202,26 @@ export type Database = {
           job_url?: string | null
           location?: string | null
           notes?: string | null
-          outcome?: ApplicationOutcome | null
+          outcome?: string | null
           salary_range?: string | null
-          submission_status?: ApplicationSubmissionStatus
+          submission_status?: string
           submitted_cover_document_id?: string | null
           submitted_resume_document_id?: string | null
           updated_at?: string
           user_id: string
         }
         Update: {
+          application_status?: string
+          applied_at?: string | null
           automation_active_session_id?: string | null
           automation_last_context?: Json
           automation_last_error?: string | null
-          automation_last_outcome?: ApplicationAutomationQueueState | null
+          automation_last_outcome?: string | null
+          automation_last_run_at?: string | null
+          automation_live_url?: string | null
           automation_queue_excluded?: boolean
           automation_queue_priority?: number
-          automation_last_run_at?: string | null
-          automation_queue_state?: ApplicationAutomationQueueState
-          application_status?: ApplicationStatus
-          applied_at?: string | null
+          automation_queue_state?: string
           company_name?: string
           created_at?: string
           id?: string
@@ -269,9 +230,9 @@ export type Database = {
           job_url?: string | null
           location?: string | null
           notes?: string | null
-          outcome?: ApplicationOutcome | null
+          outcome?: string | null
           salary_range?: string | null
-          submission_status?: ApplicationSubmissionStatus
+          submission_status?: string
           submitted_cover_document_id?: string | null
           submitted_resume_document_id?: string | null
           updated_at?: string
@@ -285,6 +246,20 @@ export type Database = {
             referencedRelation: "application_automation_sessions"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "applications_submitted_cover_document_id_fkey"
+            columns: ["submitted_cover_document_id"]
+            isOneToOne: false
+            referencedRelation: "documents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "applications_submitted_resume_document_id_fkey"
+            columns: ["submitted_resume_document_id"]
+            isOneToOne: false
+            referencedRelation: "documents"
+            referencedColumns: ["id"]
+          },
         ]
       }
       documents: {
@@ -295,7 +270,7 @@ export type Database = {
           id: string
           name: string
           source_generated_artifact_id: string | null
-          type: DocumentType
+          type: string
           updated_at: string
           user_id: string
           version: number
@@ -307,7 +282,7 @@ export type Database = {
           id?: string
           name: string
           source_generated_artifact_id?: string | null
-          type: DocumentType
+          type: string
           updated_at?: string
           user_id: string
           version?: number
@@ -319,12 +294,20 @@ export type Database = {
           id?: string
           name?: string
           source_generated_artifact_id?: string | null
-          type?: DocumentType
+          type?: string
           updated_at?: string
           user_id?: string
           version?: number
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "documents_source_generated_artifact_id_fkey"
+            columns: ["source_generated_artifact_id"]
+            isOneToOne: false
+            referencedRelation: "generated_artifacts"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       generated_artifacts: {
         Row: {
@@ -334,7 +317,7 @@ export type Database = {
           generator_version: string
           id: string
           prompt_used: string | null
-          type: GeneratedArtifactType
+          type: string
           user_id: string
         }
         Insert: {
@@ -344,7 +327,7 @@ export type Database = {
           generator_version?: string
           id?: string
           prompt_used?: string | null
-          type: GeneratedArtifactType
+          type: string
           user_id: string
         }
         Update: {
@@ -354,7 +337,7 @@ export type Database = {
           generator_version?: string
           id?: string
           prompt_used?: string | null
-          type?: GeneratedArtifactType
+          type?: string
           user_id?: string
         }
         Relationships: [
@@ -372,23 +355,26 @@ export type Database = {
           address_line1: string | null
           address_line2: string | null
           city: string | null
+          country: string | null
           cover_letter_tone: string
           created_at: string
-          country: string | null
           date_of_birth: string | null
           default_resume_document_id: string | null
           disability_status: string
           first_name: string | null
           full_name: string | null
+          gender: string | null
+          hispanic_ethnicity: string | null
           id: string
-          linkedin_url: string | null
           last_name: string | null
+          linkedin_url: string | null
           middle_name: string | null
           onboarded: boolean
-          postal_code: string | null
-          phone_country_code: string | null
-          professional_email: string | null
           phone: string | null
+          phone_country_code: string | null
+          postal_code: string | null
+          professional_email: string | null
+          race_ethnicity: string | null
           state_region: string | null
           updated_at: string
           user_id: string
@@ -398,23 +384,26 @@ export type Database = {
           address_line1?: string | null
           address_line2?: string | null
           city?: string | null
+          country?: string | null
           cover_letter_tone?: string
           created_at?: string
-          country?: string | null
           date_of_birth?: string | null
           default_resume_document_id?: string | null
           disability_status?: string
           first_name?: string | null
           full_name?: string | null
+          gender?: string | null
+          hispanic_ethnicity?: string | null
           id?: string
-          linkedin_url?: string | null
           last_name?: string | null
+          linkedin_url?: string | null
           middle_name?: string | null
           onboarded?: boolean
-          postal_code?: string | null
-          phone_country_code?: string | null
-          professional_email?: string | null
           phone?: string | null
+          phone_country_code?: string | null
+          postal_code?: string | null
+          professional_email?: string | null
+          race_ethnicity?: string | null
           state_region?: string | null
           updated_at?: string
           user_id: string
@@ -424,23 +413,26 @@ export type Database = {
           address_line1?: string | null
           address_line2?: string | null
           city?: string | null
+          country?: string | null
           cover_letter_tone?: string
           created_at?: string
-          country?: string | null
           date_of_birth?: string | null
           default_resume_document_id?: string | null
           disability_status?: string
           first_name?: string | null
           full_name?: string | null
+          gender?: string | null
+          hispanic_ethnicity?: string | null
           id?: string
-          linkedin_url?: string | null
           last_name?: string | null
+          linkedin_url?: string | null
           middle_name?: string | null
           onboarded?: boolean
-          postal_code?: string | null
-          phone_country_code?: string | null
-          professional_email?: string | null
           phone?: string | null
+          phone_country_code?: string | null
+          postal_code?: string | null
+          professional_email?: string | null
+          race_ethnicity?: string | null
           state_region?: string | null
           updated_at?: string
           user_id?: string
@@ -456,6 +448,48 @@ export type Database = {
           },
         ]
       }
+      resume_features: {
+        Row: {
+          company: string
+          created_at: string
+          description_lines: string[]
+          feature_type: Database["public"]["Enums"]["resume_feature_type"]
+          from_date: string | null
+          id: string
+          role_title: string
+          sort_order: number
+          to_date: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          company?: string
+          created_at?: string
+          description_lines?: string[]
+          feature_type?: Database["public"]["Enums"]["resume_feature_type"]
+          from_date?: string | null
+          id?: string
+          role_title?: string
+          sort_order?: number
+          to_date?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          company?: string
+          created_at?: string
+          description_lines?: string[]
+          feature_type?: Database["public"]["Enums"]["resume_feature_type"]
+          from_date?: string | null
+          id?: string
+          role_title?: string
+          sort_order?: number
+          to_date?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
@@ -464,7 +498,11 @@ export type Database = {
       [_ in never]: never
     }
     Enums: {
-      [_ in never]: never
+      resume_feature_type:
+        | "professional_experience"
+        | "academics"
+        | "extracurriculars"
+        | "skills_and_certifications"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -591,6 +629,13 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      resume_feature_type: [
+        "professional_experience",
+        "academics",
+        "extracurriculars",
+        "skills_and_certifications",
+      ],
+    },
   },
 } as const
