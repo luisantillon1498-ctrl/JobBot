@@ -71,7 +71,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
       {/* ── Mobile sheet nav (< md) ── */}
       <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
-        <SheetContent side="left" className="w-72 p-0 flex flex-col">
+        <SheetContent side="left" className="w-72 p-0 gap-0 flex flex-col">
           <div className="p-6 border-b border-border">
             <Link to="/dashboard" onClick={() => setSheetOpen(false)} className="flex items-center gap-2">
               <Bot className="h-7 w-7 text-primary" />

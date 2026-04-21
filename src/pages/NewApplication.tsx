@@ -229,7 +229,7 @@ export default function NewApplication() {
                 {extracting ? "Importing…" : "Import from URL"}
               </Button>
 
-              <div className="grid grid-cols-2 gap-4 pt-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
                 <div className="space-y-2">
                   <Label>Company name</Label>
                   <Input value={form.company_name} onChange={set("company_name")} placeholder="Filled by extract or type here" />
@@ -239,7 +239,7 @@ export default function NewApplication() {
                   <Input value={form.job_title} onChange={set("job_title")} placeholder="Filled by extract or type here" />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label>Location</Label>
                   <Input value={form.location} onChange={set("location")} placeholder="Remote / City" />

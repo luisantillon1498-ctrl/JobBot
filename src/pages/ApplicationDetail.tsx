@@ -644,14 +644,14 @@ export default function ApplicationDetail() {
           {backLabel}
         </button>
 
-        <div className="flex items-start justify-between">
-          <div>
-            <h1 className="text-3xl font-bold text-foreground">{app.job_title}</h1>
-            <p className="text-lg text-muted-foreground mt-1">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <h1 className="text-2xl sm:text-3xl font-bold text-foreground break-words">{app.job_title}</h1>
+            <p className="text-base sm:text-lg text-muted-foreground mt-1 break-words">
               {app.company_name}{app.location ? ` · ${app.location}` : ""}
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
             <Badge className={`${submissionStatusColors[app.submission_status]} text-sm px-3 py-1`} variant="secondary">
               {submissionStatusLabels[app.submission_status] || app.submission_status}
             </Badge>
