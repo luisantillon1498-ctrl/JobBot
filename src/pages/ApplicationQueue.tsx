@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowDown, ArrowUp, Loader2, Play, RotateCcw, Save } from "lucide-react";
+import { ArrowDown, ArrowUp, Loader2, Play, RotateCcw, Save, Square } from "lucide-react";
 import { toast } from "sonner";
 import { AppLayout } from "@/components/AppLayout";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -154,6 +154,7 @@ export default function ApplicationQueue() {
   const [initialSnapshot, setInitialSnapshot] = useState<string>("[]");
   const [resumingId, setResumingId] = useState<string | null>(null);
   const [killingSessionId, setKillingSessionId] = useState<string | null>(null);
+  const [freeingRunner, setFreeingRunner] = useState(false);
 
   const humanActionRows = useMemo(
     () => [...jobBotRows, ...userRows].filter((r) => r.automation_queue_state === "waiting_for_human_action"),
@@ -383,6 +384,23 @@ export default function ApplicationQueue() {
     }
   };
 
+  const handleFreeRunner = async () => {
+    setFreeingRunner(true);
+    try {
+      const result = await killRunnerSession(); // no applicationId = kill all
+      if (result.killed) {
+        toast.success("Runner freed — all active browser sessions ended");
+      } else {
+        toast.info("Runner was already free — no active sessions to end");
+      }
+      await loadQueue({ silent: true });
+    } catch {
+      toast.error("Could not reach the runner — try restarting it from Railway");
+    } finally {
+      setFreeingRunner(false);
+    }
+  };
+
   const handleEndSession = async (applicationId: string) => {
     setKillingSessionId(applicationId);
     try {
@@ -419,6 +437,17 @@ export default function ApplicationQueue() {
             >
               <RotateCcw className="h-4 w-4 mr-2" />
               Resume queue
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void handleFreeRunner()}
+              disabled={freeingRunner || starting}
+              title="Kill any stuck browser sessions and free the runner for new applications"
+              className="text-muted-foreground"
+            >
+              <Square className="h-4 w-4 mr-2" />
+              {freeingRunner ? "Freeing…" : "Free Runner"}
             </Button>
             <Button type="button" onClick={() => void saveQueue()} disabled={saving || !hasChanges || loading}>
               <Save className="h-4 w-4 mr-2" />
