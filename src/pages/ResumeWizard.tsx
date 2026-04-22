@@ -915,7 +915,16 @@ export default function ResumeWizard() {
         body: { pdf_base64: base64 },
       });
 
-      if (error) throw new Error(error.message || "Edge Function error");
+      if (error) {
+        // "non-2xx" usually means the function isn't deployed yet
+        const msg = error.message ?? "";
+        const isNotDeployed = msg.toLowerCase().includes("non-2xx") || msg.toLowerCase().includes("failed to send");
+        throw new Error(
+          isNotDeployed
+            ? "Resume parsing service is not available. Please contact support."
+            : msg || "Edge Function error",
+        );
+      }
       if (!data?.ok) throw new Error(data?.error || "Parse failed");
 
       setImportState({ status: "preview", entries: data.entries as ParsedEntry[] });
