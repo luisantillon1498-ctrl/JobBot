@@ -224,9 +224,16 @@ serve(async (req) => {
     const geminiModel = (Deno.env.get("GEMINI_MODEL") ?? "gemini-2.5-flash").trim() || "gemini-2.5-flash";
 
     // -- Call Gemini multimodal API --
+    // Use gemini-1.5-flash for PDF parsing — faster and cheaper than 2.5-flash,
+    // and the structured extraction task doesn't need 2.5's reasoning depth.
+    // Fall back to whatever GEMINI_MODEL env var says only if explicitly overridden.
+    const pdfGeminiModel = Deno.env.get("GEMINI_PARSE_MODEL")?.trim() || "gemini-1.5-flash";
+
     const geminiUrl =
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}` +
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(pdfGeminiModel)}` +
       `:generateContent?key=${encodeURIComponent(geminiApiKey)}`;
+
+    console.log(`[parse-resume] Calling Gemini model: ${pdfGeminiModel}, pdf_base64 length: ${pdf_base64.length}`);
 
     const buildGeminiPayload = () =>
       JSON.stringify({
@@ -247,18 +254,38 @@ serve(async (req) => {
         ],
         generationConfig: {
           temperature: 0,
-          maxOutputTokens: 8192,
+          maxOutputTokens: 4096,
         },
       });
 
-    const doGeminiFetch = () =>
-      fetch(geminiUrl, {
+    // 45-second timeout — leaves headroom before Supabase's 60s function limit
+    const doGeminiFetch = () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 45_000);
+      return fetch(geminiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: buildGeminiPayload(),
-      });
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timer));
+    };
 
-    let aiResponse = await doGeminiFetch();
+    let aiResponse: Response;
+    try {
+      aiResponse = await doGeminiFetch();
+    } catch (fetchErr) {
+      const isTimeout = fetchErr instanceof Error && fetchErr.name === "AbortError";
+      console.error("[parse-resume] Gemini fetch error:", isTimeout ? "timeout (45s)" : String(fetchErr));
+      return jsonOk({
+        ok: false,
+        error: isTimeout
+          ? "Resume parsing timed out — the PDF may be too large or complex. Try a smaller PDF (under 2MB)."
+          : `Network error calling AI: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`,
+        code: isTimeout ? "timeout" : "network_error",
+      });
+    }
+
+    console.log(`[parse-resume] Gemini responded with status: ${aiResponse.status}`);
 
     // Retry on transient overload errors (up to 3 additional attempts)
     let lastBackoffBody = "";
@@ -379,6 +406,7 @@ serve(async (req) => {
       });
     }
 
+    console.log(`[parse-resume] Returning ${entries.length} entries successfully`);
     return jsonOk({ ok: true, entries });
   } catch (e) {
     console.error("Unexpected error in parse-resume:", e);
