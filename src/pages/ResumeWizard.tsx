@@ -890,7 +890,8 @@ export default function ResumeWizard() {
     // Reset input so same file can be re-selected
     if (e.target) e.target.value = "";
     if (!file) return;
-    if (file.type !== "application/pdf") {
+    const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+    if (!isPdf) {
       toast.error("Please select a PDF file.");
       return;
     }
@@ -990,7 +991,7 @@ export default function ResumeWizard() {
         <input
           ref={fileInputRef}
           type="file"
-          accept="application/pdf"
+          accept="application/pdf,.pdf"
           className="hidden"
           onChange={handleFileChange}
         />
