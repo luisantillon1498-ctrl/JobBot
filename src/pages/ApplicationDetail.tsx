@@ -375,6 +375,17 @@ export default function ApplicationDetail() {
     }
   };
 
+  const handleDownloadDoc = async (filePath: string) => {
+    const { data, error } = await supabase.storage
+      .from("documents")
+      .createSignedUrl(filePath, 3600);
+    if (error || !data?.signedUrl) {
+      toast.error("Could not generate download link.");
+      return;
+    }
+    window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+  };
+
   const unlinkDocument = async (linkId: string) => {
     const { error } = await supabase.from("application_documents").delete().eq("id", linkId);
     if (error) {
@@ -771,6 +782,16 @@ export default function ApplicationDetail() {
                             <Badge variant="secondary" className="text-xs shrink-0">{ld.documents?.type}</Badge>
                           </div>
                           <div className="flex items-center shrink-0">
+                            {ld.documents?.file_path ? (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                title="Open document"
+                                onClick={() => void handleDownloadDoc(ld.documents.file_path)}
+                              >
+                                <ExternalLink className="h-4 w-4 text-muted-foreground" />
+                              </Button>
+                            ) : null}
                             <Button variant="ghost" size="icon" title="Remove from this application" onClick={() => unlinkDocument(ld.id)}>
                               <X className="h-4 w-4" />
                             </Button>

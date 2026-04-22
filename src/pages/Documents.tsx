@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Upload, FileText, Trash2 } from "lucide-react";
+import { Upload, FileText, Trash2, ExternalLink } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import { sanitizeStorageFileName } from "@/lib/utils";
@@ -125,6 +125,17 @@ function DocumentSection({
     if (fileRef.current) fileRef.current.value = "";
   };
 
+  const handleDownload = async (doc: Doc) => {
+    const { data, error } = await supabase.storage
+      .from("documents")
+      .createSignedUrl(doc.file_path, 3600);
+    if (error || !data?.signedUrl) {
+      toast.error("Could not generate download link.");
+      return;
+    }
+    window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+  };
+
   const confirmDelete = async () => {
     if (!docPendingDelete) return;
     setRemoving(true);
@@ -218,6 +229,14 @@ function DocumentSection({
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    title="Open document"
+                    onClick={() => void handleDownload(doc)}
+                  >
+                    <ExternalLink className="h-4 w-4 text-muted-foreground" />
+                  </Button>
                   {section.key === "resume" && onSetDefaultResume ? (
                     <div className="flex items-center gap-2 mr-1">
                       <Checkbox

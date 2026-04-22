@@ -7,6 +7,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
 const ANTHROPIC_MODEL_DEFAULT = "claude-opus-4-5";
 const GEMINI_MODEL_DEFAULT = "gemini-2.5-flash";
+const RESUME_GENERATOR_VERSION = "resume.1";
 
 const SYSTEM_MESSAGE =
   "You are an expert resume writer. Given a job description and the candidate's resume data, select and tailor the most relevant experience, academics, and skills to maximize interview likelihood. Return ONLY a valid JSON object with no markdown fencing.";
@@ -145,6 +146,58 @@ function parseAIJson(raw: string): AIResponse {
     cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
   }
   return JSON.parse(cleaned) as AIResponse;
+}
+
+// ---------------------------------------------------------------------------
+// Outcome / peer-learning helpers (mirrors generate-cover-letter logic)
+// ---------------------------------------------------------------------------
+
+function normalizeWords(text: string): Set<string> {
+  const words = text.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 2);
+  return new Set(words);
+}
+
+function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 1;
+  if (a.size === 0 || b.size === 0) return 0;
+  let inter = 0;
+  for (const x of a) { if (b.has(x)) inter++; }
+  const union = a.size + b.size - inter;
+  return union === 0 ? 0 : inter / union;
+}
+
+function interviewProgressScore(
+  applicationStatus: string,
+  outcome: string | null,
+  hadInterviewEvent: boolean,
+): number {
+  let base = 0.2;
+  switch (applicationStatus) {
+    case "final_round_interview":
+    case "second_round_interview":
+    case "first_round_interview": base = 1; break;
+    case "screening": base = 0.65; break;
+    case "not_started": base = 0.12; break;
+    default: base = 0.25;
+  }
+  if (outcome === "offer_accepted") base = Math.max(base, 1);
+  if (hadInterviewEvent) base = Math.min(1, base + 0.15);
+  return base;
+}
+
+function statusNarrative(status: string, outcome: string | null): string {
+  if (outcome === "offer_accepted") return "Offer accepted";
+  if (outcome === "rejected") return "Closed (rejected)";
+  if (outcome === "withdrew") return "Withdrawn";
+  if (outcome === "ghosted") return "No response (ghosted)";
+  const map: Record<string, string> = {
+    not_started: "Not started",
+    screening: "Screening / early conversations",
+    first_round_interview: "Invited to interview (first round)",
+    second_round_interview: "Advanced to further rounds",
+    final_round_interview: "Late-stage interviews",
+  };
+  return map[status] ?? status;
 }
 
 // ---------------------------------------------------------------------------
@@ -671,6 +724,91 @@ serve(async (req) => {
 
     const features = (featuresRaw ?? []) as ResumeFeatureRow[];
 
+    // ---------------------------------------------------------------------------
+    // Peer-learning: fetch past applications with outcomes to inform selection
+    // ---------------------------------------------------------------------------
+    const currentTitleTokens = normalizeWords(app.job_title);
+    const currentCompanyTokens = normalizeWords(app.company_name);
+    const MAX_PEER_APPLICATIONS = 4;
+
+    const { data: peerAppsRaw } = await userClient
+      .from("applications")
+      .select("id, company_name, job_title, application_status, outcome")
+      .eq("user_id", user.id)
+      .neq("id", application_id)
+      .order("updated_at", { ascending: false })
+      .limit(100);
+
+    type PeerApp = { id: string; company_name: string; job_title: string; application_status: string; outcome: string | null };
+    const peerApps = (peerAppsRaw ?? []) as PeerApp[];
+    const peerIds = peerApps.map((p) => p.id);
+
+    // Fetch interview events to boost signal
+    let interviewEventIds = new Set<string>();
+    if (peerIds.length > 0) {
+      const { data: evRows } = await userClient
+        .from("application_events")
+        .select("application_id")
+        .eq("event_type", "interview_scheduled")
+        .in("application_id", peerIds);
+      interviewEventIds = new Set((evRows ?? []).map((e: { application_id: string }) => e.application_id));
+    }
+
+    // Score and rank peers by (role similarity × interview signal)
+    const scoredPeers = peerApps
+      .map((p) => {
+        const titleSim = jaccardSimilarity(currentTitleTokens, normalizeWords(p.job_title));
+        const companySim = jaccardSimilarity(currentCompanyTokens, normalizeWords(p.company_name));
+        const roleSim = titleSim * 0.6 + companySim * 0.4;
+        const ivSignal = interviewProgressScore(p.application_status, p.outcome, interviewEventIds.has(p.id));
+        const rankScore = roleSim * ivSignal + 0.1 * ivSignal;
+        return { ...p, titleSim, companySim, roleSim, ivSignal, rankScore };
+      })
+      .sort((a, b) => b.rankScore - a.rankScore)
+      .slice(0, MAX_PEER_APPLICATIONS);
+
+    // Fetch the resume content selections for top-ranked peers (if they had resumes generated)
+    const topPeerIds = scoredPeers.map((p) => p.id);
+    const latestResumeContentByApp = new Map<string, string>();
+    if (topPeerIds.length > 0) {
+      const { data: artifactRows } = await userClient
+        .from("generated_artifacts")
+        .select("application_id, content, created_at")
+        .eq("type", "resume_content")
+        .in("application_id", topPeerIds)
+        .order("created_at", { ascending: false });
+      for (const row of artifactRows ?? []) {
+        const aid = row.application_id as string;
+        if (!latestResumeContentByApp.has(aid)) latestResumeContentByApp.set(aid, row.content as string);
+      }
+    }
+
+    // Build peer context block for the prompt
+    const peersWithHighSignal = scoredPeers.filter((p) => p.ivSignal >= 0.5); // screening or better
+    const peerContextBlock = peersWithHighSignal.length === 0
+      ? ""
+      : `\n## Past applications — outcome signals\nUse these to understand which types of experience emphasis led to interview progress for similar roles. Prioritize experience bullets and framings that align with what worked.\n\n${peersWithHighSignal
+          .map((p, i) => {
+            const lines = [
+              `### ${i + 1}. ${p.company_name} — ${p.job_title}`,
+              `- Outcome: ${statusNarrative(p.application_status, p.outcome)}`,
+              `- Role similarity to this application: ${Math.round(p.roleSim * 100)}%`,
+            ];
+            const content = latestResumeContentByApp.get(p.id);
+            if (content) {
+              try {
+                const parsed = JSON.parse(content) as { selected_experience?: Array<{ role_title: string; bullets: string[] }> };
+                const expSummary = (parsed.selected_experience ?? [])
+                  .slice(0, 2)
+                  .map((e) => `    • ${e.role_title}: ${e.bullets.slice(0, 2).join("; ")}`)
+                  .join("\n");
+                if (expSummary) lines.push(`- What was emphasized in the resume for this application:\n${expSummary}`);
+              } catch { /* ignore parse errors */ }
+            }
+            return lines.join("\n");
+          })
+          .join("\n\n")}\n`;
+
     if (features.length === 0) {
       return jsonOk({
         ok: false,
@@ -700,7 +838,7 @@ serve(async (req) => {
     const userPrompt = `Job Title: ${app.job_title}
 Company: ${app.company_name}
 Job Description: ${app.job_description ?? "(none provided)"}
-
+${peerContextBlock}
 Candidate's Resume Data:
 ${JSON.stringify(grouped, null, 2)}
 
@@ -757,6 +895,18 @@ Return this exact JSON structure:
     aiData.selected_academics = Array.isArray(aiData.selected_academics) ? aiData.selected_academics : [];
     aiData.selected_skills = Array.isArray(aiData.selected_skills) ? aiData.selected_skills : [];
     aiData.personal_interests = typeof aiData.personal_interests === "string" ? aiData.personal_interests : "";
+
+    // Save the AI's content selection so future generations can learn from outcomes
+    await userClient.from("generated_artifacts").insert({
+      application_id,
+      user_id: user.id,
+      type: "resume_content",
+      content: JSON.stringify(aiData),
+      prompt_used: userPrompt.slice(0, 8000), // cap to avoid DB size issues
+      generator_version: RESUME_GENERATOR_VERSION,
+    }).then(({ error: artifactErr }) => {
+      if (artifactErr) console.warn("resume_content artifact insert:", artifactErr);
+    });
 
     // --- Build HTML ---
     const htmlString = buildResumeHtml(
@@ -872,6 +1022,7 @@ Return this exact JSON structure:
       ok: true,
       storage_path: storagePath,
       document_id: documentId,
+      generator_version: RESUME_GENERATOR_VERSION,
     });
   } catch (e) {
     console.error("Unexpected error:", e);
