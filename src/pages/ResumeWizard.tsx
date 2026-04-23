@@ -209,25 +209,25 @@ function buildResumeHtml(profile: Profile | null, features: ResumeFeature[]): st
         body += `<div class="erow"><div class="lc date">${escapeHtml(dateStr)}</div><div class="rc entry"><div class="corow"><span class="co">${escapeHtml(coName)}</span><span class="loc">${escapeHtml(loc)}</span></div>${subtitle}${bullets}</div></div>`;
       }
     } else if (type === "extracurriculars") {
-      // Paragraph format: "Role, Org (dates) - description"
+      // Paragraph format: "**Role**, **Org** (dates) - description"
       const paras = entries.map((f) => {
         const dateStr = fmtDateRange(f.from_date, f.to_date);
-        const who = [
-          f.role_title,
-          f.company ? `, ${f.company}` : "",
-          dateStr ? ` (${dateStr})` : "",
-        ].join("");
+        const role = f.role_title ? `<strong>${escapeHtml(f.role_title)}</strong>` : "";
+        const org = f.company ? `, <strong>${escapeHtml(f.company)}</strong>` : "";
+        const date = dateStr ? ` (${escapeHtml(dateStr)})` : "";
         const desc = f.description_lines.join("; ");
-        return `<p>${escapeHtml(who)}${desc ? ` - ${escapeHtml(desc)}` : ""}</p>`;
+        return `<p>${role}${org}${date}${desc ? ` - ${escapeHtml(desc)}` : ""}</p>`;
       }).join("");
       body += `<div class="shead"><div class="lc"><strong>${escapeHtml(label)}</strong></div><div class="rc inline">${paras}</div></div>`;
     } else if (type === "skills_and_certifications") {
-      // Inline: "Category: skill1, skill2" joined with semi-colons
-      const text = entries.map((f) =>
-        f.description_lines.length
-          ? `${escapeHtml(f.role_title)}: ${f.description_lines.map(escapeHtml).join(", ")}`
-          : escapeHtml(f.role_title)
-      ).join("; ");
+      // If multiple categories, prefix each with "Category: items". If only one, skip the label.
+      const text = entries.length === 1 && entries[0].description_lines.length
+        ? entries[0].description_lines.map(escapeHtml).join(", ")
+        : entries.map((f) =>
+            f.description_lines.length
+              ? `${escapeHtml(f.role_title)}: ${f.description_lines.map(escapeHtml).join(", ")}`
+              : escapeHtml(f.role_title)
+          ).join("; ");
       body += `<div class="shead"><div class="lc"><strong>${escapeHtml(label)}</strong></div><div class="rc inline"><p>${text}</p></div></div>`;
     } else if (type === "personal") {
       const text = entries.map((f) => f.role_title).filter(Boolean).join(", ");
