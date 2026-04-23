@@ -916,14 +916,10 @@ export default function ResumeWizard() {
       });
 
       if (error) {
-        // "non-2xx" usually means the function isn't deployed yet
-        const msg = error.message ?? "";
-        const isNotDeployed = msg.toLowerCase().includes("non-2xx") || msg.toLowerCase().includes("failed to send");
-        throw new Error(
-          isNotDeployed
-            ? "Resume parsing service is not available. Please contact support."
-            : msg || "Edge Function error",
-        );
+        // Log full error object so we can diagnose non-2xx failures
+        console.error("[parse-resume] invoke error:", error);
+        const msg = error.message ?? String(error);
+        throw new Error(msg || "Edge Function returned an error");
       }
       if (!data?.ok) throw new Error(data?.error || "Parse failed");
 
