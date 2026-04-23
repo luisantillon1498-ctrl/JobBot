@@ -150,12 +150,14 @@ function buildResumeHtml(profile: Profile | null, features: ResumeFeature[]): st
     profile?.full_name || "";
 
   // Contact: each item on its own centered line
-  const contactLines = [
-    profile?.professional_email,
-    [profile?.phone_country_code, profile?.phone].filter(Boolean).join(" ") || null,
-    profile?.linkedin_url,
-    [profile?.city, profile?.state_region, profile?.country].filter(Boolean).join(", ") || null,
-  ].filter(Boolean) as string[];
+  const phone = [profile?.phone_country_code, profile?.phone].filter(Boolean).join(" ") || null;
+  const location = [profile?.city, profile?.state_region, profile?.country].filter(Boolean).join(", ") || null;
+  // Row 1: phone · location, Row 2: email · linkedin
+  const contactRows: string[] = [];
+  const row1 = [phone, location].filter(Boolean) as string[];
+  const row2 = [profile?.professional_email, profile?.linkedin_url].filter(Boolean) as string[];
+  if (row1.length) contactRows.push(row1.map(escapeHtml).join(" &nbsp;&nbsp;·&nbsp;&nbsp; "));
+  if (row2.length) contactRows.push(row2.map(escapeHtml).join(" &nbsp;&nbsp;·&nbsp;&nbsp; "));
 
   // Year-only dates for the left column (e.g. "2023 - 2025")
   const fmtYear = (d: string | null) => (d ? d.split("-")[0] : "");
@@ -243,7 +245,7 @@ function buildResumeHtml(profile: Profile | null, features: ResumeFeature[]): st
 body{font-family:'Times New Roman',Times,serif;font-size:10pt;line-height:1.2;color:#000;padding:.5in}
 .page{max-width:7.5in;margin:0 auto}
 .name{text-align:center;font-size:10pt;font-weight:bold;text-transform:uppercase;letter-spacing:.04em;margin-bottom:1pt}
-.cl{text-align:center;font-size:10pt;margin-bottom:0}
+.cl{text-align:center;font-size:10pt;margin-bottom:2pt}
 /* Two-column rows */
 .shead,.erow{display:flex}
 .shead{margin-top:7pt}
@@ -271,7 +273,7 @@ ul li{font-size:10pt;line-height:1.2;margin-bottom:0;list-style-type:disc}
 <body>
 <div class="page">
 ${name ? `<div class="name">${escapeHtml(name)}</div>` : ""}
-${contactLines.map((l) => `<div class="cl">${escapeHtml(l)}</div>`).join("")}
+${contactRows.map((l) => `<div class="cl">${l}</div>`).join("")}
 ${body}
 </div>
 <script>
