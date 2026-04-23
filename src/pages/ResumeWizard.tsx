@@ -240,31 +240,31 @@ function buildResumeHtml(profile: Profile | null, features: ResumeFeature[]): st
 <title>${name ? escapeHtml(name) + " – Resume" : "Resume"}</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Times New Roman',Times,serif;font-size:10.5pt;line-height:1.35;color:#000}
+body{font-family:'Times New Roman',Times,serif;font-size:10.5pt;line-height:1.4;color:#000}
 .page{max-width:6.5in;margin:0 auto}
-.name{text-align:center;font-size:12pt;font-weight:bold;text-transform:uppercase;letter-spacing:.04em;margin-bottom:2pt}
-.cl{text-align:center;font-size:10pt;margin-bottom:1pt}
+.name{text-align:center;font-size:11pt;font-weight:bold;text-transform:uppercase;letter-spacing:.04em;margin-bottom:2pt}
+.cl{text-align:center;font-size:10.5pt;margin-bottom:1pt}
 /* Two-column rows */
 .shead,.erow{display:flex}
-.shead{margin-top:11pt}
+.shead{margin-top:10pt}
 .erow{margin-top:2pt}
-.lc{width:82pt;flex-shrink:0;padding-right:6pt;font-size:10pt}
+.lc{width:82pt;flex-shrink:0;padding-right:6pt;font-size:10.5pt}
 .rc{flex:1;min-width:0}
-.date{font-size:10pt}
-.entry{margin-bottom:5pt}
+.date{font-size:10.5pt}
+.entry{margin-bottom:4pt}
 /* Company row */
 .corow{display:flex;justify-content:space-between;align-items:baseline}
 .co{font-weight:bold;font-size:10.5pt}
 .loc{font-weight:bold;font-size:10.5pt}
 /* Role / degree subtitle */
-.role{font-weight:bold;font-size:10pt;margin-top:1pt}
-.sub{font-size:10pt;margin-top:1pt}
+.role{font-weight:bold;font-size:10.5pt;margin-top:1pt}
+.sub{font-size:10.5pt;margin-top:1pt}
 /* Inline sections (community / skills / personal) */
-.inline p{font-size:10pt;line-height:1.35;margin-bottom:2pt}
+.inline p{font-size:10.5pt;line-height:1.4;margin-bottom:2pt}
 /* Bullets */
 ul{margin:2pt 0 2pt 13pt}
-ul li{font-size:10pt;line-height:1.3;margin-bottom:1pt;list-style-type:disc}
-@page{size:letter;margin:.75in 1in}
+ul li{font-size:10.5pt;line-height:1.35;margin-bottom:1pt;list-style-type:disc}
+@page{size:letter;margin:1in}
 @media print{.page{max-width:100%}}
 </style>
 </head>
