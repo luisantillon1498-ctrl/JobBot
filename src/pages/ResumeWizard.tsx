@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import * as pdfjsLib from "pdfjs-dist";
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+  "pdfjs-dist/build/pdf.worker.min.mjs",
+  import.meta.url,
+).href;
 import { Link } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
@@ -899,27 +904,35 @@ export default function ResumeWizard() {
     setImportState({ status: "parsing" });
 
     try {
-      // Read file as base64
-      const base64 = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const result = reader.result as string;
-          // Strip "data:application/pdf;base64," prefix
-          resolve(result.split(",")[1]);
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
+      // Extract text client-side — avoids sending binary to the Edge Function
+      // and lets Gemini work with clean text (same path as cover letter generation).
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const pageTexts: string[] = [];
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        const text = content.items
+          .map((item) => ("str" in item ? (item as { str: string }).str : ""))
+          .join(" ")
+          .trim();
+        if (text) pageTexts.push(text);
+      }
+      const pdfText = pageTexts.join("\n\n");
+
+      if (!pdfText.trim()) {
+        throw new Error(
+          "No text could be extracted from this PDF. It may be a scanned image — try copying your resume to a Word doc and saving as PDF."
+        );
+      }
 
       const { data, error } = await supabase.functions.invoke("parse-resume", {
-        body: { pdf_base64: base64 },
+        body: { pdf_text: pdfText },
       });
 
       if (error) {
-        // Log full error object so we can diagnose non-2xx failures
         console.error("[parse-resume] invoke error:", error);
-        const msg = error.message ?? String(error);
-        throw new Error(msg || "Edge Function returned an error");
+        throw new Error(error.message ?? "Edge Function returned an error");
       }
       if (!data?.ok) throw new Error(data?.error || "Parse failed");
 

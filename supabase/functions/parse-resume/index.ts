@@ -42,7 +42,7 @@ function jsonOk(body: Record<string, unknown>): Response {
 }
 
 // ---------------------------------------------------------------------------
-// Retry / backoff helpers (mirrors generate-cover-letter pattern)
+// Retry / backoff helpers
 // ---------------------------------------------------------------------------
 
 function delay(ms: number): Promise<void> {
@@ -54,9 +54,7 @@ function parseProviderErrorMessage(errText: string): string | null {
     const j = JSON.parse(errText) as { error?: { message?: string }; message?: string };
     const m = j?.error?.message ?? j?.message;
     if (typeof m === "string" && m.trim()) return m.trim().slice(0, 500);
-  } catch {
-    /* ignore */
-  }
+  } catch { /* ignore */ }
   const t = errText.trim();
   return t ? t.slice(0, 400) : null;
 }
@@ -67,7 +65,7 @@ function retryAfterMsFromResponse(res: Response, attemptIndex: number): number {
     const sec = parseFloat(ra);
     if (Number.isFinite(sec) && sec >= 0) return Math.min(Math.max(sec * 1000, 500), 25000);
   }
-  return [2000, 5000, 10000][attemptIndex] ?? 8000;
+  return [1000, 2000, 4000, 6000, 8000][attemptIndex] ?? 8000;
 }
 
 function isTransientOverload(status: number, errText: string): boolean {
@@ -86,26 +84,26 @@ function isTransientOverload(status: number, errText: string): boolean {
 // Gemini prompt
 // ---------------------------------------------------------------------------
 
-const PARSE_PROMPT = `Parse this resume PDF and extract all content into a structured JSON array. Return ONLY a valid JSON array with no markdown fencing, no explanation, just the raw JSON array.
+const PARSE_PROMPT = `You are a resume parser. Extract all resume content from the text below into a JSON array.
 
-Each item in the array must have these exact fields:
+Each item must have these exact fields:
 - feature_type: one of "professional_experience", "academics", "extracurriculars", "skills_and_certifications", "personal"
-- role_title: string (job title, category name for skills, interests text for personal)
-- company: string (company/org name, school name for academics, empty for skills/personal)
-- location: string (city/state, empty if not shown)
+- role_title: string (job title, skill category name, or interests text for personal)
+- company: string (company/org name, or school name for academics; empty for skills/personal)
+- location: string (city/state if shown, otherwise empty)
 - degree: string (degree type for academics, empty otherwise)
 - major: string (field of study for academics, empty otherwise)
-- from_date: string "YYYY-MM-01" or null
-- to_date: string "YYYY-MM-01" or null (null means current/present)
-- description_lines: array of strings (bullet points, one string per bullet)
-- sort_order: sequential integer per feature_type group starting at 0
+- from_date: string in "YYYY-MM-01" format, or null
+- to_date: string in "YYYY-MM-01" format, or null if current/present
+- description_lines: array of strings, one bullet point per string
+- sort_order: integer, sequential per feature_type group starting at 0
 
 Rules:
-- Skills section: one entry per category (e.g. "Technical Skills", "Languages"). Use role_title for category name. List skills as description_lines items.
-- Personal/interests: one entry total, put all interests in role_title as a comma-separated string, description_lines empty.
-- For "present" positions, set to_date to null.
-- Preserve all bullet points exactly as written.
-- If a date is approximate (e.g. "Spring 2023"), use your best estimate for the month.`;
+- Skills: one entry per category. Use role_title for category name, list items as description_lines.
+- Personal/interests: one entry, comma-separated interests in role_title, empty description_lines.
+- Present roles: set to_date to null.
+- Preserve bullet text exactly as written.
+- Approximate dates (e.g. "Spring 2023"): use best estimate for month.`;
 
 // ---------------------------------------------------------------------------
 // Validation helpers
@@ -119,15 +117,6 @@ const VALID_FEATURE_TYPES = new Set<string>([
   "personal",
 ]);
 
-/** Strip leading/trailing markdown code fences that Gemini sometimes emits. */
-function stripMarkdownFences(text: string): string {
-  return text
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```\s*$/, "")
-    .trim();
-}
-
-/** Validate and coerce a raw parsed entry, throwing if unrecoverable. */
 function coerceEntry(raw: unknown, index: number): ResumeEntry {
   if (typeof raw !== "object" || raw === null) {
     throw new Error(`Entry ${index} is not an object`);
@@ -146,7 +135,6 @@ function coerceEntry(raw: unknown, index: number): ResumeEntry {
     if (val == null) return null;
     const s = String(val).trim();
     if (!s || s.toLowerCase() === "null") return null;
-    // Enforce YYYY-MM-01 format — fix day component if present
     const match = s.match(/^(\d{4})-(\d{2})/);
     if (match) return `${match[1]}-${match[2]}-01`;
     return null;
@@ -207,10 +195,16 @@ serve(async (req) => {
       return jsonOk({ ok: false, error: "Request body must be valid JSON", code: "bad_request" });
     }
 
-    const { pdf_base64 } = body;
-    if (pdf_base64 == null || typeof pdf_base64 !== "string" || pdf_base64.trim() === "") {
-      return jsonOk({ ok: false, error: "Missing pdf_base64", code: "bad_request" });
+    const { pdf_text } = body;
+    if (!pdf_text || typeof pdf_text !== "string" || !pdf_text.trim()) {
+      return jsonOk({ ok: false, error: "Missing pdf_text", code: "bad_request" });
     }
+
+    // Truncate very long documents to stay within token limits
+    const MAX_CHARS = 40_000;
+    const resumeText = pdf_text.length > MAX_CHARS
+      ? pdf_text.slice(0, MAX_CHARS) + "\n[document truncated]"
+      : pdf_text;
 
     // -- Env --
     const geminiApiKey = (Deno.env.get("GEMINI_API_KEY") ?? "").trim();
@@ -221,44 +215,32 @@ serve(async (req) => {
         code: "misconfigured",
       });
     }
+
+    // Use the same model as generate-cover-letter
     const geminiModel = (Deno.env.get("GEMINI_MODEL") ?? "gemini-2.5-flash").trim() || "gemini-2.5-flash";
 
-    // -- Call Gemini multimodal API --
-    // Use gemini-1.5-flash for PDF parsing — faster and cheaper than 2.5-flash,
-    // and the structured extraction task doesn't need 2.5's reasoning depth.
-    // Fall back to whatever GEMINI_MODEL env var says only if explicitly overridden.
-    const pdfGeminiModel = Deno.env.get("GEMINI_PARSE_MODEL")?.trim() || "gemini-1.5-flash";
-
     const geminiUrl =
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(pdfGeminiModel)}` +
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}` +
       `:generateContent?key=${encodeURIComponent(geminiApiKey)}`;
 
-    console.log(`[parse-resume] Calling Gemini model: ${pdfGeminiModel}, pdf_base64 length: ${pdf_base64.length}`);
+    console.log(`[parse-resume] model=${geminiModel} text_length=${resumeText.length}`);
 
-    const buildGeminiPayload = () =>
-      JSON.stringify({
-        contents: [
-          {
-            parts: [
-              {
-                inline_data: {
-                  mime_type: "application/pdf",
-                  data: pdf_base64.trim(),
-                },
-              },
-              {
-                text: PARSE_PROMPT,
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature: 0,
-          maxOutputTokens: 4096,
+    const buildGeminiPayload = () => JSON.stringify({
+      contents: [
+        {
+          parts: [
+            { text: `${PARSE_PROMPT}\n\nResume text:\n${resumeText}` },
+          ],
         },
-      });
+      ],
+      generationConfig: {
+        temperature: 0,
+        maxOutputTokens: 8192,
+        responseMimeType: "application/json",
+      },
+    });
 
-    // 45-second timeout — leaves headroom before Supabase's 60s function limit
+    // 45-second timeout per attempt
     const doGeminiFetch = () => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 45_000);
@@ -275,145 +257,115 @@ serve(async (req) => {
       aiResponse = await doGeminiFetch();
     } catch (fetchErr) {
       const isTimeout = fetchErr instanceof Error && fetchErr.name === "AbortError";
-      console.error("[parse-resume] Gemini fetch error:", isTimeout ? "timeout (45s)" : String(fetchErr));
+      console.error("[parse-resume] fetch error:", isTimeout ? "timeout" : String(fetchErr));
       return jsonOk({
         ok: false,
         error: isTimeout
-          ? "Resume parsing timed out — the PDF may be too large or complex. Try a smaller PDF (under 2MB)."
-          : `Network error calling AI: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`,
+          ? "Resume parsing timed out. Please try again."
+          : `Network error: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`,
         code: isTimeout ? "timeout" : "network_error",
       });
     }
 
-    console.log(`[parse-resume] Gemini responded with status: ${aiResponse.status}`);
+    console.log(`[parse-resume] Gemini status: ${aiResponse.status}`);
 
-    // Retry on transient overload errors (up to 3 additional attempts)
+    // Retry on transient overload (up to 5 attempts)
     let lastBackoffBody = "";
-    for (let attempt = 0; !aiResponse.ok && attempt < 3; attempt++) {
+    for (let attempt = 0; !aiResponse.ok && attempt < 5; attempt++) {
       const attemptBody = await aiResponse.text().catch(() => "");
       if (!isTransientOverload(aiResponse.status, attemptBody)) {
         lastBackoffBody = attemptBody;
         break;
       }
       lastBackoffBody = attemptBody;
-      console.warn(
-        "Gemini transient overload, backing off:",
-        aiResponse.status,
-        attempt + 1,
-        attemptBody.slice(0, 200),
-      );
+      console.warn(`[parse-resume] overload, retry ${attempt + 1}:`, aiResponse.status);
       await delay(retryAfterMsFromResponse(aiResponse, attempt));
       aiResponse = await doGeminiFetch();
     }
 
-    // Handle non-OK responses after retries
     if (!aiResponse.ok) {
       const errText = (await aiResponse.text().catch(() => "")) || lastBackoffBody;
-
       if (aiResponse.status === 429) {
         const detail = parseProviderErrorMessage(errText);
         return jsonOk({
           ok: false,
-          error: detail
-            ? `The model provider rate-limited this request (429). ${detail} Wait and try again, or check quotas in Google AI Studio.`
-            : "The model provider rate-limited this request (HTTP 429). Wait 1–2 minutes and try again.",
+          error: detail ?? "Rate limited (429). Wait a moment and try again.",
           code: "rate_limited",
         });
       }
-
       if (isTransientOverload(aiResponse.status, errText)) {
-        const detail = parseProviderErrorMessage(errText);
         return jsonOk({
           ok: false,
-          error: detail ?? "The model provider is temporarily overloaded. Please retry shortly.",
+          error: "The AI provider is temporarily overloaded. Please try again in a moment.",
           code: "provider_unavailable",
         });
       }
-
-      console.error("Gemini generateContent error:", aiResponse.status, errText.slice(0, 800));
-      const hint =
-        (parseProviderErrorMessage(errText) ?? errText.trim().slice(0, 400)) ||
-        `HTTP ${aiResponse.status}`;
+      const hint = parseProviderErrorMessage(errText) ?? `HTTP ${aiResponse.status}`;
+      console.error("[parse-resume] Gemini error:", aiResponse.status, errText.slice(0, 400));
       return jsonOk({ ok: false, error: `AI generation failed: ${hint}`, code: "ai_provider" });
     }
 
-    // -- Parse Gemini response --
+    // -- Parse response --
     const aiData = await aiResponse.json() as {
-      candidates?: Array<{
-        content?: { parts?: Array<{ text?: string }> };
-        finishReason?: string;
-      }>;
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }; finishReason?: string }>;
       promptFeedback?: { blockReason?: string };
-      error?: { message?: string };
     };
 
     if (aiData.promptFeedback?.blockReason) {
-      return jsonOk({
-        ok: false,
-        error: `Generation blocked (${aiData.promptFeedback.blockReason}).`,
-        code: "blocked",
-      });
+      return jsonOk({ ok: false, error: `Blocked: ${aiData.promptFeedback.blockReason}`, code: "blocked" });
     }
 
     const parts = aiData.candidates?.[0]?.content?.parts ?? [];
-    const rawText = parts
-      .map((p) => (typeof p.text === "string" ? p.text : ""))
-      .join("")
-      .trim();
+    const rawText = parts.map((p) => (typeof p.text === "string" ? p.text : "")).join("").trim();
 
     if (!rawText) {
-      return jsonOk({ ok: false, error: "No content generated by AI", code: "empty_completion" });
+      return jsonOk({ ok: false, error: "No content generated.", code: "empty_completion" });
     }
 
-    // -- Strip markdown fences and parse JSON --
-    const cleaned = stripMarkdownFences(rawText);
+    // With responseMimeType: "application/json", Gemini guarantees valid JSON —
+    // just parse directly, no repair needed.
     let parsed: unknown;
     try {
-      parsed = JSON.parse(cleaned);
+      parsed = JSON.parse(rawText);
     } catch (parseErr) {
-      console.error("JSON parse failed. Raw AI output (first 500 chars):", rawText.slice(0, 500));
+      console.error("[parse-resume] JSON parse failed:", rawText.slice(0, 300));
       return jsonOk({
         ok: false,
-        error: `Failed to parse AI response as JSON: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
+        error: `JSON parse error: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
         code: "parse_error",
       });
     }
 
-    if (!Array.isArray(parsed)) {
-      return jsonOk({
-        ok: false,
-        error: "AI returned a non-array JSON value. Expected a JSON array of resume entries.",
-        code: "parse_error",
-      });
+    // Gemini might wrap the array in an object — unwrap if needed
+    const arr: unknown = Array.isArray(parsed)
+      ? parsed
+      : (parsed && typeof parsed === "object"
+          ? Object.values(parsed as Record<string, unknown>).find(Array.isArray)
+          : null);
+
+    if (!Array.isArray(arr)) {
+      console.error("[parse-resume] not an array:", rawText.slice(0, 200));
+      return jsonOk({ ok: false, error: "AI did not return a JSON array.", code: "parse_error" });
     }
 
-    // -- Validate and coerce each entry --
     const entries: ResumeEntry[] = [];
-    for (let i = 0; i < parsed.length; i++) {
+    for (let i = 0; i < arr.length; i++) {
       try {
-        entries.push(coerceEntry(parsed[i], i));
-      } catch (validationErr) {
-        console.warn("Skipping invalid entry:", validationErr);
-        // Skip malformed individual entries rather than failing the whole response
+        entries.push(coerceEntry(arr[i], i));
+      } catch (e) {
+        console.warn("[parse-resume] skipping invalid entry:", e);
       }
     }
 
     if (entries.length === 0) {
-      return jsonOk({
-        ok: false,
-        error: "No valid resume entries could be extracted from the PDF.",
-        code: "no_entries",
-      });
+      return jsonOk({ ok: false, error: "No valid resume entries found in the document.", code: "no_entries" });
     }
 
-    console.log(`[parse-resume] Returning ${entries.length} entries successfully`);
+    console.log(`[parse-resume] success: ${entries.length} entries`);
     return jsonOk({ ok: true, entries });
+
   } catch (e) {
-    console.error("Unexpected error in parse-resume:", e);
-    return jsonOk({
-      ok: false,
-      error: e instanceof Error ? e.message : "Unknown error",
-      code: "unexpected",
-    });
+    console.error("[parse-resume] unexpected error:", e);
+    return jsonOk({ ok: false, error: e instanceof Error ? e.message : "Unknown error", code: "unexpected" });
   }
 });
