@@ -240,7 +240,7 @@ function buildResumeHtml(profile: Profile | null, features: ResumeFeature[]): st
 <title>${name ? escapeHtml(name) + " – Resume" : "Resume"}</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Times New Roman',Times,serif;font-size:10pt;line-height:1.2;color:#000}
+body{font-family:'Times New Roman',Times,serif;font-size:10pt;line-height:1.2;color:#000;padding:.5in}
 .page{max-width:7.5in;margin:0 auto}
 .name{text-align:center;font-size:10pt;font-weight:bold;text-transform:uppercase;letter-spacing:.04em;margin-bottom:1pt}
 .cl{text-align:center;font-size:10pt;margin-bottom:0}
@@ -264,7 +264,7 @@ body{font-family:'Times New Roman',Times,serif;font-size:10pt;line-height:1.2;co
 /* Bullets */
 ul{margin:1pt 0 0 13pt}
 ul li{font-size:10pt;line-height:1.2;margin-bottom:0;list-style-type:disc}
-@page{size:letter;margin:.5in}
+@page{size:letter;margin:0}
 @media print{.page{max-width:100%}}
 </style>
 </head>
