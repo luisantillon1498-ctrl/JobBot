@@ -126,85 +126,112 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-const SECTION_LABELS: Record<FeatureType, string> = {
-  professional_experience: "Professional Experience",
-  academics: "Education",
-  extracurriculars: "Leadership & Activities",
-  skills_and_certifications: "Skills & Certifications",
-  personal: "Personal",
+// Section display labels match the original resume style (lowercase)
+const SECTION_DISPLAY_LABELS: Record<FeatureType, string> = {
+  academics: "education",
+  professional_experience: "experience",
+  extracurriculars: "community",
+  skills_and_certifications: "technical skills",
+  personal: "personal",
 };
+
+// Section render order: education first, then experience (matches Luis's format)
+const EXPORT_SECTION_ORDER: FeatureType[] = [
+  "academics",
+  "professional_experience",
+  "extracurriculars",
+  "skills_and_certifications",
+  "personal",
+];
 
 function buildResumeHtml(profile: Profile | null, features: ResumeFeature[]): string {
   const name =
     [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") ||
-    profile?.full_name ||
-    "";
-  const contactParts = [
+    profile?.full_name || "";
+
+  // Contact: each item on its own centered line
+  const contactLines = [
     profile?.professional_email,
     [profile?.phone_country_code, profile?.phone].filter(Boolean).join(" ") || null,
     profile?.linkedin_url,
     [profile?.city, profile?.state_region, profile?.country].filter(Boolean).join(", ") || null,
   ].filter(Boolean) as string[];
 
-  const fmtDate = (d: string | null) => {
-    if (!d) return "";
-    const [y, m] = d.split("-");
-    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-    return `${months[parseInt(m, 10) - 1]} ${y}`;
+  // Year-only dates for the left column (e.g. "2023 - 2025")
+  const fmtYear = (d: string | null) => (d ? d.split("-")[0] : "");
+  const fmtDateRange = (from: string | null, to: string | null) => {
+    const f = fmtYear(from);
+    const t = to === null ? "Present" : fmtYear(to);
+    if (!f && !t) return "";
+    if (!f) return t;
+    if (f === t) return f;
+    return `${f} - ${t}`;
   };
 
-  const renderEntry = (f: ResumeFeature): string => {
-    let primaryLeft = "";
-    let secondaryLeft = "";
-    let rightTop = "";
-    let rightBottom = "";
-    const dateRange = [
-      f.from_date ? fmtDate(f.from_date) : "",
-      f.to_date === null ? "Present" : fmtDate(f.to_date),
-    ].filter(Boolean).join(" – ");
+  // Auto-italicize "Key Term: rest of bullet" pattern (experience style)
+  const fmtBullet = (text: string): string => {
+    const m = text.match(/^([^:]{1,50}):\s(.+)/s);
+    return m
+      ? `<em><strong>${escapeHtml(m[1])}</strong></em>: ${escapeHtml(m[2])}`
+      : escapeHtml(text);
+  };
 
-    if (f.feature_type === "academics") {
-      primaryLeft = [f.degree, f.major].filter(Boolean).join(", ") || f.company;
-      secondaryLeft = [f.degree || f.major ? f.company : "", f.location].filter(Boolean).join(" · ");
-      rightBottom = dateRange;
-    } else if (f.feature_type === "personal") {
-      return `<div class="entry"><span class="bold">Interests:</span> ${escapeHtml(f.role_title)}</div>`;
-    } else if (f.feature_type === "skills_and_certifications") {
-      primaryLeft = f.role_title;
-    } else {
-      primaryLeft = f.role_title;
-      secondaryLeft = [f.company, f.location].filter(Boolean).join(" · ");
-      rightBottom = dateRange;
+  let body = "";
+
+  for (const type of EXPORT_SECTION_ORDER) {
+    const entries = features.filter((f) => f.feature_type === type);
+    if (!entries.length) continue;
+    const label = SECTION_DISPLAY_LABELS[type];
+
+    if (type === "academics" || type === "professional_experience") {
+      // Two-column layout: section label row, then per-entry date + content rows
+      body += `<div class="shead"><div class="lc"><strong>${escapeHtml(label)}</strong></div><div class="rc"></div></div>`;
+
+      for (const f of entries) {
+        const dateStr = fmtDateRange(f.from_date, f.to_date);
+        const coName = (f.company || "").toUpperCase();
+        const loc = (f.location || "").toUpperCase();
+
+        let subtitle = "";
+        if (type === "academics") {
+          const deg = [f.degree, f.major ? `in ${f.major}` : ""].filter(Boolean).join(" ");
+          if (deg) subtitle = `<div class="sub">${escapeHtml(deg)}</div>`;
+        } else {
+          if (f.role_title) subtitle = `<div class="role">${escapeHtml(f.role_title)}</div>`;
+        }
+
+        const bullets = f.description_lines.length
+          ? `<ul>${f.description_lines.map((l) => `<li>${fmtBullet(l)}</li>`).join("")}</ul>`
+          : "";
+
+        body += `<div class="erow"><div class="lc date">${escapeHtml(dateStr)}</div><div class="rc entry"><div class="corow"><span class="co">${escapeHtml(coName)}</span><span class="loc">${escapeHtml(loc)}</span></div>${subtitle}${bullets}</div></div>`;
+      }
+    } else if (type === "extracurriculars") {
+      // Paragraph format: "Role, Org (dates) - description"
+      const paras = entries.map((f) => {
+        const dateStr = fmtDateRange(f.from_date, f.to_date);
+        const who = [
+          f.role_title,
+          f.company ? `, ${f.company}` : "",
+          dateStr ? ` (${dateStr})` : "",
+        ].join("");
+        const desc = f.description_lines.join("; ");
+        return `<p>${escapeHtml(who)}${desc ? ` - ${escapeHtml(desc)}` : ""}</p>`;
+      }).join("");
+      body += `<div class="shead"><div class="lc"><strong>${escapeHtml(label)}</strong></div><div class="rc inline">${paras}</div></div>`;
+    } else if (type === "skills_and_certifications") {
+      // Inline: "Category: skill1, skill2" joined with semi-colons
+      const text = entries.map((f) =>
+        f.description_lines.length
+          ? `${escapeHtml(f.role_title)}: ${f.description_lines.map(escapeHtml).join(", ")}`
+          : escapeHtml(f.role_title)
+      ).join("; ");
+      body += `<div class="shead"><div class="lc"><strong>${escapeHtml(label)}</strong></div><div class="rc inline"><p>${text}</p></div></div>`;
+    } else if (type === "personal") {
+      const text = entries.map((f) => f.role_title).filter(Boolean).join(", ");
+      body += `<div class="shead"><div class="lc"><strong>${escapeHtml(label)}</strong></div><div class="rc inline"><p>${escapeHtml(text)}</p></div></div>`;
     }
-
-    const bulletsHtml =
-      f.description_lines.length > 0
-        ? `<ul>${f.description_lines.map((l) => `<li>${escapeHtml(l)}</li>`).join("")}</ul>`
-        : "";
-
-    return `<div class="entry">
-  <div class="row">
-    <div><span class="bold">${escapeHtml(primaryLeft)}</span>${secondaryLeft ? `<span class="sub"> · ${escapeHtml(secondaryLeft)}</span>` : ""}</div>
-    <div class="right">${escapeHtml(rightTop)}${rightBottom ? `<span class="dates">${escapeHtml(rightBottom)}</span>` : ""}</div>
-  </div>
-  ${bulletsHtml}
-</div>`;
-  };
-
-  const SECTION_ORDER: FeatureType[] = [
-    "professional_experience","academics","extracurriculars","skills_and_certifications","personal",
-  ];
-
-  const sectionsHtml = SECTION_ORDER
-    .map((type) => {
-      const entries = features.filter((f) => f.feature_type === type);
-      if (!entries.length) return "";
-      return `<div class="section">
-  <div class="section-title">${SECTION_LABELS[type]}</div>
-  ${entries.map(renderEntry).join("")}
-</div>`;
-    })
-    .join("");
+  }
 
   return `<!DOCTYPE html>
 <html>
@@ -213,31 +240,54 @@ function buildResumeHtml(profile: Profile | null, features: ResumeFeature[]): st
 <title>${name ? escapeHtml(name) + " – Resume" : "Resume"}</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Times New Roman',serif;font-size:11pt;line-height:1.35;color:#000}
-.page{max-width:7.5in;margin:0 auto;padding:.5in 0}
-.name{text-align:center;font-size:17pt;font-weight:bold;margin-bottom:3pt}
-.contact{text-align:center;font-size:10pt;margin-bottom:10pt}
-.section{margin-top:8pt}
-.section-title{font-size:10.5pt;font-weight:bold;text-transform:uppercase;letter-spacing:.07em;border-bottom:1px solid #000;padding-bottom:1pt;margin-bottom:5pt}
+body{font-family:'Times New Roman',Times,serif;font-size:10.5pt;line-height:1.35;color:#000}
+.page{max-width:6.5in;margin:0 auto}
+.name{text-align:center;font-size:12pt;font-weight:bold;text-transform:uppercase;letter-spacing:.04em;margin-bottom:2pt}
+.cl{text-align:center;font-size:10pt;margin-bottom:1pt}
+/* Two-column rows */
+.shead,.erow{display:flex}
+.shead{margin-top:11pt}
+.erow{margin-top:2pt}
+.lc{width:82pt;flex-shrink:0;padding-right:6pt;font-size:10pt}
+.rc{flex:1;min-width:0}
+.date{font-size:10pt}
 .entry{margin-bottom:5pt}
-.row{display:flex;justify-content:space-between;align-items:flex-start;gap:8pt}
-.bold{font-weight:bold;font-size:10.5pt}
-.sub{font-size:10.5pt}
-.right{text-align:right;flex-shrink:0;font-size:10pt}
-.dates{display:block;font-size:10pt}
-ul{margin:2pt 0 0 12pt}
-ul li{font-size:10pt;margin-bottom:1pt;list-style-type:disc}
+/* Company row */
+.corow{display:flex;justify-content:space-between;align-items:baseline}
+.co{font-weight:bold;font-size:10.5pt}
+.loc{font-weight:bold;font-size:10.5pt}
+/* Role / degree subtitle */
+.role{font-weight:bold;font-size:10pt;margin-top:1pt}
+.sub{font-size:10pt;margin-top:1pt}
+/* Inline sections (community / skills / personal) */
+.inline p{font-size:10pt;line-height:1.35;margin-bottom:2pt}
+/* Bullets */
+ul{margin:2pt 0 2pt 13pt}
+ul li{font-size:10pt;line-height:1.3;margin-bottom:1pt;list-style-type:disc}
 @page{size:letter;margin:.75in 1in}
-@media print{.page{padding:0;max-width:100%}}
+@media print{.page{max-width:100%}}
 </style>
 </head>
 <body>
 <div class="page">
 ${name ? `<div class="name">${escapeHtml(name)}</div>` : ""}
-${contactParts.length ? `<div class="contact">${contactParts.map(escapeHtml).join(" · ")}</div>` : ""}
-${sectionsHtml}
+${contactLines.map((l) => `<div class="cl">${escapeHtml(l)}</div>`).join("")}
+${body}
 </div>
-<script>window.onload=function(){window.print()}</script>
+<script>
+window.onload=function(){
+  /* Letter page = 11in. At 96px/in = 1056px total. Warn if content overflows. */
+  var pages=document.body.scrollHeight/(11*96);
+  var go=true;
+  if(pages>1.05){
+    go=window.confirm(
+      '\u26A0\uFE0F Your resume is approximately '+pages.toFixed(1)+' pages long.\n\n'+
+      'Close this window, uncheck some items in the Resume Wizard, and export again — or click OK to print anyway.'
+    );
+  }
+  if(go)window.print();
+};
+</script>
 </body>
 </html>`;
 }
