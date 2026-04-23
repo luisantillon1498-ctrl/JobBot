@@ -110,6 +110,7 @@ export default function ApplicationDetail() {
   const [linkedDocs, setLinkedDocs] = useState<LinkedDocumentRow[]>([]);
   const [allDocs, setAllDocs] = useState<DocumentRow[]>([]);
   const [generating, setGenerating] = useState(false);
+  const [generatingResume, setGeneratingResume] = useState(false);
   const [loading, setLoading] = useState(true);
   const [deleteDialog, setDeleteDialog] = useState<DeleteDialog | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -526,6 +527,22 @@ export default function ApplicationDetail() {
     }
   };
 
+  const generateResume = async () => {
+    if (!user || !app) return;
+    setGeneratingResume(true);
+    try {
+      const { error } = await supabase.functions.invoke("generate-resume", {
+        body: { application_id: id },
+      });
+      if (error) throw new Error(error.message ?? "Failed to generate resume");
+      toast.success("Resume generated and saved to documents!");
+      fetchData();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to generate resume");
+    }
+    setGeneratingResume(false);
+  };
+
   const generateCoverLetter = async () => {
     if (!user || !app) return;
     setGenerating(true);
@@ -913,10 +930,16 @@ export default function ApplicationDetail() {
                     Use the chevron to show or hide the full text. For cover letters, you can mark one as used when you applied—it will be saved to your Document Vault if needed.
                   </p>
                 </div>
-                <Button onClick={generateCoverLetter} disabled={generating} size="sm" className="shrink-0">
-                  <Sparkles className="h-4 w-4 mr-2" />
-                  {generating ? "Generating..." : "Generate Cover Letter"}
-                </Button>
+                <div className="flex flex-wrap gap-2 shrink-0">
+                  <Button onClick={generateCoverLetter} disabled={generating || generatingResume} size="sm">
+                    <Sparkles className="h-4 w-4 mr-2" />
+                    {generating ? "Generating..." : "Generate Cover Letter"}
+                  </Button>
+                  <Button onClick={generateResume} disabled={generating || generatingResume} size="sm" variant="outline">
+                    <Sparkles className="h-4 w-4 mr-2" />
+                    {generatingResume ? "Generating..." : "Generate Resume"}
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent>
                 {artifacts.length === 0 ? (

@@ -465,6 +465,32 @@ export default function Dashboard() {
     if (!deleteTarget) return;
     const id = deleteTarget.id;
     setDeleting(true);
+
+    // 1. Find all documents linked to this application
+    const { data: linkedDocs } = await supabase
+      .from("application_documents")
+      .select("document_id, documents(id, file_path)")
+      .eq("application_id", id);
+
+    // 2. Delete storage files for linked documents
+    if (linkedDocs && linkedDocs.length > 0) {
+      const filePaths = linkedDocs
+        .map((row: { documents: { file_path: string } | null }) => row.documents?.file_path)
+        .filter(Boolean) as string[];
+      if (filePaths.length > 0) {
+        await supabase.storage.from("documents").remove(filePaths);
+      }
+
+      // 3. Delete the document rows (application_documents rows cascade automatically)
+      const docIds = linkedDocs
+        .map((row: { document_id: string }) => row.document_id)
+        .filter(Boolean) as string[];
+      if (docIds.length > 0) {
+        await supabase.from("documents").delete().in("id", docIds);
+      }
+    }
+
+    // 4. Delete the application (cascades: application_events, application_documents, generated_artifacts)
     const { error } = await supabase.from("applications").delete().eq("id", id);
     setDeleting(false);
     setDeleteTarget(null);
@@ -506,7 +532,7 @@ export default function Dashboard() {
             <AlertDialogHeader>
               <AlertDialogTitle>Delete this application?</AlertDialogTitle>
               <AlertDialogDescription>
-                {`"${deleteTarget.job_title}" at ${deleteTarget.company_name} will be removed along with its timeline, generated documents, and document links. Files in your Document Vault are not deleted.`}
+                {`"${deleteTarget.job_title}" at ${deleteTarget.company_name} will be permanently removed, including all linked documents, generated cover letters, resumes, and storage files. This cannot be undone.`}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
