@@ -13,7 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { ArrowUp, ArrowDown, Pencil, Trash2, X, Plus, Upload, FileText, CheckCircle2, AlertCircle } from "lucide-react";
+import { ArrowUp, ArrowDown, Pencil, Trash2, X, Plus, Upload, FileText, CheckCircle2, AlertCircle, Download } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -118,6 +118,128 @@ function draftFromFeature(f: ResumeFeature): FeatureDraft {
     is_present: f.to_date === null,
     description_lines: f.description_lines.length > 0 ? [...f.description_lines] : [""],
   };
+}
+
+// ─── Export helpers ───────────────────────────────────────────────────────────
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+const SECTION_LABELS: Record<FeatureType, string> = {
+  professional_experience: "Professional Experience",
+  academics: "Education",
+  extracurriculars: "Leadership & Activities",
+  skills_and_certifications: "Skills & Certifications",
+  personal: "Personal",
+};
+
+function buildResumeHtml(profile: Profile | null, features: ResumeFeature[]): string {
+  const name =
+    [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") ||
+    profile?.full_name ||
+    "";
+  const contactParts = [
+    profile?.professional_email,
+    [profile?.phone_country_code, profile?.phone].filter(Boolean).join(" ") || null,
+    profile?.linkedin_url,
+    [profile?.city, profile?.state_region, profile?.country].filter(Boolean).join(", ") || null,
+  ].filter(Boolean) as string[];
+
+  const fmtDate = (d: string | null) => {
+    if (!d) return "";
+    const [y, m] = d.split("-");
+    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    return `${months[parseInt(m, 10) - 1]} ${y}`;
+  };
+
+  const renderEntry = (f: ResumeFeature): string => {
+    let primaryLeft = "";
+    let secondaryLeft = "";
+    let rightTop = "";
+    let rightBottom = "";
+    const dateRange = [
+      f.from_date ? fmtDate(f.from_date) : "",
+      f.to_date === null ? "Present" : fmtDate(f.to_date),
+    ].filter(Boolean).join(" – ");
+
+    if (f.feature_type === "academics") {
+      primaryLeft = [f.degree, f.major].filter(Boolean).join(", ") || f.company;
+      secondaryLeft = [f.degree || f.major ? f.company : "", f.location].filter(Boolean).join(" · ");
+      rightBottom = dateRange;
+    } else if (f.feature_type === "personal") {
+      return `<div class="entry"><span class="bold">Interests:</span> ${escapeHtml(f.role_title)}</div>`;
+    } else if (f.feature_type === "skills_and_certifications") {
+      primaryLeft = f.role_title;
+    } else {
+      primaryLeft = f.role_title;
+      secondaryLeft = [f.company, f.location].filter(Boolean).join(" · ");
+      rightBottom = dateRange;
+    }
+
+    const bulletsHtml =
+      f.description_lines.length > 0
+        ? `<ul>${f.description_lines.map((l) => `<li>${escapeHtml(l)}</li>`).join("")}</ul>`
+        : "";
+
+    return `<div class="entry">
+  <div class="row">
+    <div><span class="bold">${escapeHtml(primaryLeft)}</span>${secondaryLeft ? `<span class="sub"> · ${escapeHtml(secondaryLeft)}</span>` : ""}</div>
+    <div class="right">${escapeHtml(rightTop)}${rightBottom ? `<span class="dates">${escapeHtml(rightBottom)}</span>` : ""}</div>
+  </div>
+  ${bulletsHtml}
+</div>`;
+  };
+
+  const SECTION_ORDER: FeatureType[] = [
+    "professional_experience","academics","extracurriculars","skills_and_certifications","personal",
+  ];
+
+  const sectionsHtml = SECTION_ORDER
+    .map((type) => {
+      const entries = features.filter((f) => f.feature_type === type);
+      if (!entries.length) return "";
+      return `<div class="section">
+  <div class="section-title">${SECTION_LABELS[type]}</div>
+  ${entries.map(renderEntry).join("")}
+</div>`;
+    })
+    .join("");
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>${name ? escapeHtml(name) + " – Resume" : "Resume"}</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Times New Roman',serif;font-size:11pt;line-height:1.35;color:#000}
+.page{max-width:7.5in;margin:0 auto;padding:.5in 0}
+.name{text-align:center;font-size:17pt;font-weight:bold;margin-bottom:3pt}
+.contact{text-align:center;font-size:10pt;margin-bottom:10pt}
+.section{margin-top:8pt}
+.section-title{font-size:10.5pt;font-weight:bold;text-transform:uppercase;letter-spacing:.07em;border-bottom:1px solid #000;padding-bottom:1pt;margin-bottom:5pt}
+.entry{margin-bottom:5pt}
+.row{display:flex;justify-content:space-between;align-items:flex-start;gap:8pt}
+.bold{font-weight:bold;font-size:10.5pt}
+.sub{font-size:10.5pt}
+.right{text-align:right;flex-shrink:0;font-size:10pt}
+.dates{display:block;font-size:10pt}
+ul{margin:2pt 0 0 12pt}
+ul li{font-size:10pt;margin-bottom:1pt;list-style-type:disc}
+@page{size:letter;margin:.75in 1in}
+@media print{.page{padding:0;max-width:100%}}
+</style>
+</head>
+<body>
+<div class="page">
+${name ? `<div class="name">${escapeHtml(name)}</div>` : ""}
+${contactParts.length ? `<div class="contact">${contactParts.map(escapeHtml).join(" · ")}</div>` : ""}
+${sectionsHtml}
+</div>
+<script>window.onload=function(){window.print()}</script>
+</body>
+</html>`;
 }
 
 // ─── Section config ───────────────────────────────────────────────────────────
@@ -527,7 +649,15 @@ function FeatureForm({ draft, featureType, onChange, onSave, onCancel, saving }:
 
 // ─── Feature row (read-only display) ─────────────────────────────────────────
 
-function FeatureRowDisplay({ f, featureType }: { f: ResumeFeature; featureType: FeatureType }) {
+interface FeatureRowDisplayProps {
+  f: ResumeFeature;
+  featureType: FeatureType;
+  isHeaderChecked: boolean;
+  isBulletChecked: (i: number) => boolean;
+  onToggleBullet: (i: number) => void;
+}
+
+function FeatureRowDisplay({ f, featureType, isHeaderChecked, isBulletChecked, onToggleBullet }: FeatureRowDisplayProps) {
   // Determine primary label
   let primaryLabel: React.ReactNode;
   if (featureType === "academics") {
@@ -566,11 +696,19 @@ function FeatureRowDisplay({ f, featureType }: { f: ResumeFeature; featureType: 
         </p>
       )}
       {f.description_lines.length > 0 && (
-        <ul className="mt-1.5 space-y-0.5">
+        <ul className="mt-1.5 space-y-0.5 list-none">
           {f.description_lines.map((line, li) => (
-            <li key={li} className="text-sm text-muted-foreground flex gap-1.5">
+            <li key={li} className="text-sm text-muted-foreground flex gap-1.5 items-start">
+              <input
+                type="checkbox"
+                checked={isHeaderChecked && isBulletChecked(li)}
+                disabled={!isHeaderChecked}
+                onChange={() => onToggleBullet(li)}
+                className="mt-0.5 h-3 w-3 shrink-0 cursor-pointer accent-primary disabled:cursor-default disabled:opacity-40"
+                onClick={(e) => e.stopPropagation()}
+              />
               <span className="shrink-0 mt-px">•</span>
-              <span>{line}</span>
+              <span className={!isHeaderChecked || !isBulletChecked(li) ? "opacity-40 line-through" : ""}>{line}</span>
             </li>
           ))}
         </ul>
@@ -585,9 +723,13 @@ interface SectionCardProps {
   features: ResumeFeature[];
   onSaved: () => void;
   userId: string;
+  isHeaderChecked: (id: string) => boolean;
+  isBulletChecked: (id: string, i: number) => boolean;
+  onToggleHeader: (f: ResumeFeature) => void;
+  onToggleBullet: (id: string, i: number) => void;
 }
 
-function SectionCard({ label, featureType, features, onSaved, userId }: SectionCardProps) {
+function SectionCard({ label, featureType, features, onSaved, userId, isHeaderChecked, isBulletChecked, onToggleHeader, onToggleBullet }: SectionCardProps) {
   const [editingId, setEditingId] = useState<string | "new" | null>(null);
   const [draft, setDraft] = useState<FeatureDraft>(emptyDraft());
   const [saving, setSaving] = useState(false);
@@ -743,6 +885,14 @@ function SectionCard({ label, featureType, features, onSaved, userId }: SectionC
             {/* Feature row */}
             <div className="py-3 border-t border-border first:border-t-0">
               <div className="flex items-start gap-3">
+                {/* Export checkbox */}
+                <input
+                  type="checkbox"
+                  checked={isHeaderChecked(f.id)}
+                  onChange={() => onToggleHeader(f)}
+                  className="mt-1.5 h-3.5 w-3.5 shrink-0 cursor-pointer accent-primary"
+                  onClick={(e) => e.stopPropagation()}
+                />
                 {/* Reorder arrows */}
                 <div className="flex flex-col gap-0.5 shrink-0 mt-0.5">
                   <Button
@@ -770,7 +920,13 @@ function SectionCard({ label, featureType, features, onSaved, userId }: SectionC
                 </div>
 
                 {/* Feature content (read-only) */}
-                <FeatureRowDisplay f={f} featureType={featureType} />
+                <FeatureRowDisplay
+                  f={f}
+                  featureType={featureType}
+                  isHeaderChecked={isHeaderChecked(f.id)}
+                  isBulletChecked={(i) => isBulletChecked(f.id, i)}
+                  onToggleBullet={(i) => onToggleBullet(f.id, i)}
+                />
 
                 {/* Action buttons */}
                 <div className="flex items-center gap-1 shrink-0">
@@ -888,6 +1044,54 @@ export default function ResumeWizard() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importState, setImportState] = useState<ImportState>({ status: "idle" });
 
+  // ── Export selection (empty set = everything checked by default) ─────────────
+  const [unchecked, setUnchecked] = useState<Set<string>>(new Set());
+  const isHeaderChecked = (id: string) => !unchecked.has(`h:${id}`);
+  const isBulletChecked = (id: string, i: number) => !unchecked.has(`b:${id}:${i}`);
+
+  const onToggleHeader = (f: ResumeFeature) => {
+    setUnchecked((prev) => {
+      const next = new Set(prev);
+      const hKey = `h:${f.id}`;
+      if (next.has(hKey)) {
+        next.delete(hKey);
+        f.description_lines.forEach((_, i) => next.delete(`b:${f.id}:${i}`));
+      } else {
+        next.add(hKey);
+        f.description_lines.forEach((_, i) => next.add(`b:${f.id}:${i}`));
+      }
+      return next;
+    });
+  };
+
+  const onToggleBullet = (featureId: string, i: number) => {
+    setUnchecked((prev) => {
+      const next = new Set(prev);
+      const key = `b:${featureId}:${i}`;
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const exportResume = () => {
+    const selected = features
+      .filter((f) => isHeaderChecked(f.id))
+      .map((f) => ({
+        ...f,
+        description_lines: f.description_lines.filter((_, i) => isBulletChecked(f.id, i)),
+      }));
+    if (selected.length === 0) {
+      toast.error("No items selected. Check at least one entry to export.");
+      return;
+    }
+    const html = buildResumeHtml(profile, selected);
+    const win = window.open("", "_blank");
+    if (win) {
+      win.document.write(html);
+      win.document.close();
+    }
+  };
+
   const handleImportClick = () => fileInputRef.current?.click();
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -998,11 +1202,24 @@ export default function ResumeWizard() {
   return (
     <AppLayout>
       <div className="space-y-6 max-w-3xl">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">Resume Wizard</h1>
-          <p className="text-muted-foreground mt-1">
-            Build your structured resume content. This data can be used to tailor applications.
-          </p>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-foreground">Resume Wizard</h1>
+            <p className="text-muted-foreground mt-1">
+              Build your structured resume content. Check items to include in your exported resume.
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={exportResume}
+            disabled={featuresLoading || features.length === 0}
+            className="shrink-0"
+          >
+            <Download className="h-3.5 w-3.5 mr-1.5" />
+            Export PDF
+          </Button>
         </div>
 
         {/* Hidden file input */}
@@ -1146,6 +1363,10 @@ export default function ResumeWizard() {
                 features={featuresForType(section.type)}
                 onSaved={loadFeatures}
                 userId={user?.id ?? ""}
+                isHeaderChecked={isHeaderChecked}
+                isBulletChecked={isBulletChecked}
+                onToggleHeader={onToggleHeader}
+                onToggleBullet={onToggleBullet}
               />
             ))}
           </div>
