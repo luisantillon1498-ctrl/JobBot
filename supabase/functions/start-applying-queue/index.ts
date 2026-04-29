@@ -406,6 +406,27 @@ serve(async (req) => {
       }
 
       // ── Normal mode: start a fresh Playwright run ──────────────────────────
+
+      // Guard: skip apps that are already in an active automation state.
+      // Restarting them would wipe the existing session state, crash the live
+      // Playwright process, and break the noVNC browser connection.
+      // Guard: skip apps that have already completed (use Re-queue to retry them).
+      {
+        const activeStates = ["autofilling", "waiting_for_human_action", "human_action_completed"];
+        const doneStates = ["waiting_for_review", "submitted"];
+        if (activeStates.includes(app.automation_queue_state)) {
+          console.log(`[EF] app ${appId} — skipping (already active: ${app.automation_queue_state}); hardStop`);
+          outcomes.push({ application_id: appId, state: app.automation_queue_state as QueueState, hard_blocker: true });
+          hardStop = true; // Don't start new apps while a session is paused/running
+          continue;
+        }
+        if (doneStates.includes(app.automation_queue_state)) {
+          console.log(`[EF] app ${appId} — skipping (already done: ${app.automation_queue_state})`);
+          outcomes.push({ application_id: appId, state: app.automation_queue_state as QueueState, hard_blocker: false });
+          continue;
+        }
+      }
+
       await logState({
         appId,
         state: "autofilling",
@@ -664,6 +685,24 @@ serve(async (req) => {
       if (!runnerResponse.ok) {
         const reason = pickRunnerError(body, `Runner returned ${runnerResponse.status}`);
         const hard = body.hard_blocker === true;
+
+        // 409: runner is busy with another paused session.  Reset this app to
+        // "queued" — NOT "waiting_for_human_action" — so the user isn't told
+        // this application needs human action when it just needs to wait for
+        // the active session to finish first.
+        if (runnerResponse.status === 409) {
+          await logState({
+            appId,
+            state: "queued",
+            description: "Runner busy with another session; reset to queue for retry",
+            reason,
+            context: { hard_blocker: true, handoff_category: "runner_busy" },
+          });
+          outcomes.push({ application_id: appId, state: "queued", hard_blocker: true, reason });
+          hardStop = true;
+          continue;
+        }
+
         await logState({
           appId,
           state: hard ? "waiting_for_human_action" : "failed",

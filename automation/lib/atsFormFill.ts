@@ -299,6 +299,22 @@ const SITE_ID_BAG_EXTRA_SCORE: Partial<
   },
 };
 
+/**
+ * Fields that must be skipped by `fillAtsApplicationForm` for a given ATS
+ * because a site-specific helper (e.g. `fillGreenhouseCustomDropdowns`) is
+ * solely responsible for them.  Filling the hidden backing <input> directly
+ * breaks the React Select / custom widget state that the helper later interacts
+ * with.
+ */
+const SITE_SKIP_TARGETS: Partial<Record<AtsPlanSite, Set<SupportedFieldKey>>> = {
+  // Greenhouse country is a React Select — only fillGreenhouseCustomDropdowns
+  // should touch it.  fillAtsApplicationForm filling input#country directly
+  // sets the backing value but does NOT update the visible dropdown, and the
+  // inconsistent state prevents the custom-dropdown helper from selecting the
+  // correct option afterward.
+  greenhouse: new Set<SupportedFieldKey>(["country"]),
+};
+
 const NEGATIVE_PATTERNS: Partial<Record<SupportedFieldKey, RegExp[]>> = {
   full_name: [/\bfirst\b/i, /\blast\b/i, /\bfamily\b/i, /\bgiven\b/i, /\bpreferred\b/i],
   first_name: [/\blast name\b/i, /\bsurname\b/i, /\bpreferred\b/i],
@@ -809,6 +825,14 @@ export async function fillAtsApplicationForm(page: Page, payload: ApplicantPaylo
   const mappedByTarget = new Map<SupportedFieldKey, MappedField>(mappingPlan.mapped.map((m) => [m.target, m]));
 
   for (const target of ORDERED_TARGETS) {
+    // Site-specific skip: some fields must be handled exclusively by
+    // site-specific helpers (e.g. fillGreenhouseCustomDropdowns) because
+    // filling the hidden backing input directly breaks custom widget state.
+    if (SITE_SKIP_TARGETS[site]?.has(target)) {
+      console.log(`[fill] SKIP ${target}: deferred to site-specific dropdown helper`);
+      continue;
+    }
+
     const value = payloadValueForTarget(payload, target)?.trim();
     if (!value) {
       console.log(`[fill] EMPTY ${target}: no payload value`);
