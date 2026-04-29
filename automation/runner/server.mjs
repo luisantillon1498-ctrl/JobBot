@@ -42,6 +42,13 @@ const MIME = {
 const activeSessions = new Map();
 // Map<appId, { proc, doneFile, exitPromise, tempDir, outputDir, cleanupPaths, runId }>
 
+/**
+ * Apps currently being launched (between /run receipt and Playwright exiting/pausing).
+ * Prevents a second /run from slipping through the guard during the brief window before
+ * activeSessions.set() is called (which only happens when Playwright actually pauses).
+ */
+const pendingRuns = new Set();
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function sendJson(res, status, body) {
@@ -727,18 +734,28 @@ const server = createServer(async (req, res) => {
         }
       }
 
-      if (activeSessions.size > 0) {
-        const activeIds = [...activeSessions.keys()].join(", ");
-        console.log(`[runner] Rejecting /run for ${payload.application_id} — active session(s) still in VNC: ${activeIds}`);
+      if (activeSessions.size > 0 || pendingRuns.size > 0) {
+        const activeIds = [...new Set([...activeSessions.keys(), ...pendingRuns])].join(", ");
+        console.log(`[runner] Rejecting /run for ${payload.application_id} — active/pending session(s): ${activeIds}`);
         return sendJson(res, 409, {
           ok: false,
           status: "waiting_for_human_action",
           hard_blocker: true,
-          message: `Another application is currently open in the live browser (${activeIds}). Resume or complete it before starting a new one.`,
+          message: `Another application is currently running or open in the live browser (${activeIds}). Resume or complete it before starting a new one.`,
         });
       }
 
-      const result = await runAutomation(payload);
+      // Mark this app as in-flight immediately so concurrent /run requests are
+      // blocked even during the brief window before activeSessions.set() is called
+      // (which only happens once Playwright actually pauses for human action).
+      const runAppId = String(payload.application_id ?? "");
+      pendingRuns.add(runAppId);
+      let result;
+      try {
+        result = await runAutomation(payload);
+      } finally {
+        pendingRuns.delete(runAppId);
+      }
       return sendJson(res, result.httpStatus, result.body);
     } catch (error) {
       return sendJson(res, 500, {
