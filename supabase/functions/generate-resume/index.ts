@@ -924,6 +924,7 @@ Return this exact JSON structure:
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ html: htmlString }),
+        signal: AbortSignal.timeout(90_000),
       });
 
       if (!pdfRes.ok) {

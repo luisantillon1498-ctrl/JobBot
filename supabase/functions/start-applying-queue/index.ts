@@ -465,22 +465,32 @@ serve(async (req) => {
       // or cases where the user hasn't manually selected a resume.
       if (!resumeDocumentId) {
         console.log(`[EF] app ${appId} — no resume found, generating tailored resume via Edge Function`);
-        const generateRes = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/generate-resume`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: authHeader,
-            apikey: Deno.env.get("SUPABASE_ANON_KEY")!,
-          },
-          body: JSON.stringify({ application_id: appId }),
-          signal: AbortSignal.timeout(60_000),
-        });
-        console.log(`[EF] app ${appId} — resume gen response:`, generateRes.status);
-        if (generateRes.ok) {
-          const genBody = await generateRes.json() as { ok?: boolean; document_id?: string };
-          if (genBody.ok && genBody.document_id) {
-            resumeDocumentId = genBody.document_id;
-            console.log(`[EF] app ${appId} — generated resume document_id: ${resumeDocumentId}`);
+        const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
+        if (!anonKey) {
+          console.error(`[EF] app ${appId} — SUPABASE_ANON_KEY is not set; skipping resume generation`);
+        } else {
+          const generateRes = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/generate-resume`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: authHeader,
+              apikey: anonKey,
+            },
+            body: JSON.stringify({ application_id: appId }),
+            signal: AbortSignal.timeout(120_000),
+          });
+          console.log(`[EF] app ${appId} — resume gen HTTP status:`, generateRes.status);
+          if (generateRes.ok) {
+            const genBody = await generateRes.json() as { ok?: boolean; document_id?: string; error?: string; code?: string };
+            if (genBody.ok && genBody.document_id) {
+              resumeDocumentId = genBody.document_id;
+              console.log(`[EF] app ${appId} — generated resume document_id: ${resumeDocumentId}`);
+            } else {
+              console.error(`[EF] app ${appId} — generate-resume returned ok=false: code=${genBody.code} error=${genBody.error}`);
+            }
+          } else {
+            const errText = await generateRes.text().catch(() => "");
+            console.error(`[EF] app ${appId} — generate-resume HTTP error ${generateRes.status}: ${errText.slice(0, 500)}`);
           }
         }
       }
