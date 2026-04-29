@@ -144,7 +144,7 @@ const EXPORT_SECTION_ORDER: FeatureType[] = [
   "personal",
 ];
 
-function buildResumeHtml(profile: Profile | null, features: ResumeFeature[]): string {
+function buildResumeHtml(profile: Profile | null, features: ResumeFeature[], pageLimit = 1): string {
   const name =
     [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") ||
     profile?.full_name || "";
@@ -278,12 +278,15 @@ ${body}
 </div>
 <script>
 window.onload=function(){
-  /* Letter page = 11in. At 96px/in = 1056px total. Warn if content overflows. */
+  /* Letter page = 11in. At 96px/in = 1056px total. Warn if content overflows chosen page limit. */
   var pages=document.body.scrollHeight/(11*96);
+  var limit=${pageLimit};
   var go=true;
-  if(pages>1.05){
+  if(pages>limit+0.05){
     go=window.confirm(
-      '\u26A0\uFE0F Your resume is approximately '+pages.toFixed(1)+' pages long.\n\n'+
+      '⚠️ Your resume is approximately '+pages.toFixed(1)+' pages long (limit: '+limit+').
+
+'+
       'Close this window, uncheck some items in the Resume Wizard, and export again — or click OK to print anyway.'
     );
   }
@@ -1096,6 +1099,9 @@ export default function ResumeWizard() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importState, setImportState] = useState<ImportState>({ status: "idle" });
 
+  // ── Page limit for export ─────────────────────────────────────────────────────
+  const [pageLimit, setPageLimit] = useState(1);
+
   // ── Export selection (empty set = everything checked by default) ─────────────
   const [unchecked, setUnchecked] = useState<Set<string>>(new Set());
   const isHeaderChecked = (id: string) => !unchecked.has(`h:${id}`);
@@ -1136,7 +1142,7 @@ export default function ResumeWizard() {
       toast.error("No items selected. Check at least one entry to export.");
       return;
     }
-    const html = buildResumeHtml(profile, selected);
+    const html = buildResumeHtml(profile, selected, pageLimit);
     const win = window.open("", "_blank");
     if (win) {
       win.document.write(html);
@@ -1261,17 +1267,35 @@ export default function ResumeWizard() {
               Build your structured resume content. Check items to include in your exported resume.
             </p>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={exportResume}
-            disabled={featuresLoading || features.length === 0}
-            className="shrink-0"
-          >
-            <Download className="h-3.5 w-3.5 mr-1.5" />
-            Export PDF
-          </Button>
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-muted-foreground mr-0.5">Pages:</span>
+              {[1, 2, 3].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => setPageLimit(n)}
+                  className={`h-7 w-7 text-xs rounded-md border font-medium transition-colors ${
+                    pageLimit === n
+                      ? "bg-primary text-primary-foreground border-primary"
+                      : "border-border text-muted-foreground hover:text-foreground hover:border-foreground/40 bg-background"
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={exportResume}
+              disabled={featuresLoading || features.length === 0}
+            >
+              <Download className="h-3.5 w-3.5 mr-1.5" />
+              Export PDF
+            </Button>
+          </div>
         </div>
 
         {/* Hidden file input */}

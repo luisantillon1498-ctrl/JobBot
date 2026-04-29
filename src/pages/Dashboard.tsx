@@ -433,6 +433,10 @@ export default function Dashboard() {
               console.error(clErr);
               coverGenFailed++;
             }
+            // Fire-and-forget tailored resume alongside cover letter
+            supabase.functions
+              .invoke("generate-resume", { body: { application_id: data.id } })
+              .catch(() => {/* non-fatal */});
           } else {
             coversSkipped++;
           }
