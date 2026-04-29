@@ -1,44 +1,50 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
-import { isMissingDefaultResumeColumnError } from "@/lib/supabaseSchemaHints";
 
 type Client = SupabaseClient<Database>;
 
 /**
- * File path for the user's resume used in cover letter generation:
- * profile default if set and still valid, otherwise most recently uploaded resume.
+ * Returns the storage file_path of the tailored resume for this application.
+ *
+ * Resolution order:
+ *  1. A resume document already linked to the application via application_documents.
+ *  2. If none exists, invoke the generate-resume Edge Function to create one,
+ *     then return the resulting storage_path.
+ *  3. Returns null if generation fails or the runner is unavailable.
  */
-export async function getResumePathForGeneration(client: Client, userId: string): Promise<string | null> {
-  const { data: profile, error: profileErr } = await client
-    .from("profiles")
-    .select("default_resume_document_id")
-    .eq("user_id", userId)
-    .maybeSingle();
+export async function getOrGenerateApplicationResumePath(
+  client: Client,
+  applicationId: string,
+): Promise<string | null> {
+  // 1. Check application_documents → documents for an existing resume
+  const { data: appDocs } = await client
+    .from("application_documents")
+    .select("documents(file_path, type)")
+    .eq("application_id", applicationId);
 
-  if (profileErr && isMissingDefaultResumeColumnError(profileErr)) {
-    /* Migration not applied — use latest resume only. */
-  } else if (!profileErr) {
-    const defaultId = profile?.default_resume_document_id ?? null;
-    if (defaultId) {
-      const { data: doc } = await client
-        .from("documents")
-        .select("file_path")
-        .eq("id", defaultId)
-        .eq("user_id", userId)
-        .eq("type", "resume")
-        .maybeSingle();
-      if (doc?.file_path) return doc.file_path;
-    }
+  type LinkedDoc = { documents: { file_path: string; type: string } | null };
+  const existing = (appDocs ?? []) as LinkedDoc[];
+  const resumeRow = existing.find((r) => r.documents?.type === "resume");
+  if (resumeRow?.documents?.file_path) {
+    return resumeRow.documents.file_path;
   }
 
-  const { data: latest } = await client
-    .from("documents")
-    .select("file_path")
-    .eq("user_id", userId)
-    .eq("type", "resume")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  // 2. No resume yet — generate one first
+  const { data: genResult, error: genErr } = await client.functions.invoke("generate-resume", {
+    body: { application_id: applicationId },
+  });
 
-  return latest?.file_path ?? null;
+  if (genErr) {
+    console.warn("generate-resume invoke error:", genErr.message);
+    return null;
+  }
+
+  const result = genResult as { ok?: boolean; storage_path?: string; error?: string } | null;
+
+  if (!result?.ok) {
+    console.warn("generate-resume returned error:", result?.error);
+    return null;
+  }
+
+  return result.storage_path ?? null;
 }

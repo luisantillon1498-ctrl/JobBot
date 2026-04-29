@@ -7,10 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Upload, FileText, Trash2, ExternalLink } from "lucide-react";
-import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import { sanitizeStorageFileName } from "@/lib/utils";
-import { isMissingDefaultResumeColumnError } from "@/lib/supabaseSchemaHints";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -45,20 +43,11 @@ function DocumentSection({
   docs,
   user,
   onRefresh,
-  defaultResumeDocumentId,
-  defaultResumeBusy,
-  onSetDefaultResume,
-  supportsDefaultResumeColumn,
 }: {
   section: (typeof SECTIONS)[number];
   docs: Doc[];
   user: { id: string } | null;
   onRefresh: () => void;
-  defaultResumeDocumentId?: string | null;
-  defaultResumeBusy?: boolean;
-  onSetDefaultResume?: (documentId: string | null) => Promise<void>;
-  /** When false, DB migration for default resume is not applied — hide checkboxes. */
-  supportsDefaultResumeColumn?: boolean;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
@@ -71,7 +60,6 @@ function DocumentSection({
     setUploading(true);
 
     let successCount = 0;
-    let defaultSetThisUpload = false;
     for (const file of files) {
       const safeSegment = sanitizeStorageFileName(file.name);
       const filePath = `${user.id}/${Date.now()}_${safeSegment}`;
@@ -106,15 +94,6 @@ function DocumentSection({
         continue;
       }
       successCount++;
-      if (
-        section.key === "resume" &&
-        onSetDefaultResume &&
-        defaultResumeDocumentId == null &&
-        !defaultSetThisUpload
-      ) {
-        await onSetDefaultResume(inserted.id);
-        defaultSetThisUpload = true;
-      }
     }
 
     setUploading(false);
@@ -183,20 +162,12 @@ function DocumentSection({
         ) : null}
       </AlertDialog>
       <CardHeader>
-        <CardTitle className="text-lg">{section.label}</CardTitle>
-        {section.key === "resume" && supportsDefaultResumeColumn === false ? (
-          <p className="text-sm text-muted-foreground font-normal pt-1 border-l-2 border-amber-500/60 pl-3">
-            Your project database doesn’t have the “default resume” field yet. Run migration{" "}
-            <code className="rounded bg-muted px-1 py-0.5 text-xs">20260414100000_profiles_default_resume.sql</code> in
-            Supabase → SQL Editor, then refresh. Until then, your <span className="font-medium text-foreground">newest</span>{" "}
-            uploaded resume is used for AI cover letters.
+        <CardTitle className=”text-lg”>{section.label}</CardTitle>
+        {section.key === “resume” && (
+          <p className=”text-sm text-muted-foreground font-normal pt-1”>
+            Resumes are generated automatically from your Resume Wizard data, tailored to each job. Upload a resume here to attach it manually to a specific application instead.
           </p>
-        ) : section.key === "resume" ? (
-          <p className="text-sm text-muted-foreground font-normal pt-1">
-            Check exactly one resume as the default for AI cover letters. If none is checked, your most recently uploaded
-            resume is used.
-          </p>
-        ) : null}
+        )}
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex items-end gap-4">
@@ -237,30 +208,6 @@ function DocumentSection({
                   >
                     <ExternalLink className="h-4 w-4 text-muted-foreground" />
                   </Button>
-                  {section.key === "resume" && onSetDefaultResume ? (
-                    <div className="flex items-center gap-2 mr-1">
-                      <Checkbox
-                        id={`default-resume-${doc.id}`}
-                        checked={
-                          String(defaultResumeDocumentId ?? "") === String(doc.id)
-                        }
-                        disabled={defaultResumeBusy}
-                        onCheckedChange={(c) => {
-                          if (c === "indeterminate") return;
-                          if (c === true) void onSetDefaultResume(doc.id);
-                          else if (String(defaultResumeDocumentId ?? "") === String(doc.id)) {
-                            void onSetDefaultResume(null);
-                          }
-                        }}
-                      />
-                      <Label
-                        htmlFor={`default-resume-${doc.id}`}
-                        className="text-xs font-normal cursor-pointer text-muted-foreground whitespace-nowrap"
-                      >
-                        Default for AI
-                      </Label>
-                    </div>
-                  ) : null}
                   <Button variant="ghost" size="icon" title="Delete document" onClick={() => setDocPendingDelete(doc)}>
                     <Trash2 className="h-4 w-4 text-destructive" />
                   </Button>
@@ -277,55 +224,13 @@ function DocumentSection({
 export default function Documents() {
   const { user } = useAuth();
   const [docs, setDocs] = useState<Doc[]>([]);
-  const [defaultResumeDocumentId, setDefaultResumeDocumentId] = useState<string | null>(null);
-  const [supportsDefaultResumeColumn, setSupportsDefaultResumeColumn] = useState(true);
-  const [defaultResumeBusy, setDefaultResumeBusy] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const fetchDocs = async () => {
     if (!user) return;
-    const [docsRes, profileRes] = await Promise.all([
-      supabase.from("documents").select("*").eq("user_id", user.id).order("created_at", { ascending: false }),
-      supabase.from("profiles").select("default_resume_document_id").eq("user_id", user.id).maybeSingle(),
-    ]);
+    const docsRes = await supabase.from("documents").select("*").eq("user_id", user.id).order("created_at", { ascending: false });
     setDocs(docsRes.data || []);
-    if (profileRes.error && isMissingDefaultResumeColumnError(profileRes.error)) {
-      setSupportsDefaultResumeColumn(false);
-      setDefaultResumeDocumentId(null);
-    } else {
-      setSupportsDefaultResumeColumn(true);
-      setDefaultResumeDocumentId(profileRes.data?.default_resume_document_id ?? null);
-    }
     setLoading(false);
-  };
-
-  const setDefaultResume = async (documentId: string | null) => {
-    if (!user) return;
-    setDefaultResumeBusy(true);
-    try {
-      const { error } = await supabase
-        .from("profiles")
-        .update({ default_resume_document_id: documentId })
-        .eq("user_id", user.id);
-      if (error) {
-        console.error(error);
-        if (isMissingDefaultResumeColumnError(error)) {
-          setSupportsDefaultResumeColumn(false);
-          await fetchDocs();
-          return;
-        }
-        toast.error(error.message || "Could not update default resume.");
-        await fetchDocs();
-        return;
-      }
-      setDefaultResumeDocumentId(documentId);
-      await fetchDocs();
-      toast.success(
-        documentId ? "Default resume saved." : "Default resume cleared; newest upload will be used.",
-      );
-    } finally {
-      setDefaultResumeBusy(false);
-    }
   };
 
   useEffect(() => {
@@ -351,12 +256,6 @@ export default function Documents() {
                 docs={docs.filter((d) => d.type === section.key)}
                 user={user}
                 onRefresh={fetchDocs}
-                defaultResumeDocumentId={section.key === "resume" ? defaultResumeDocumentId : undefined}
-                defaultResumeBusy={section.key === "resume" ? defaultResumeBusy : undefined}
-                onSetDefaultResume={
-                  section.key === "resume" && supportsDefaultResumeColumn ? setDefaultResume : undefined
-                }
-                supportsDefaultResumeColumn={section.key === "resume" ? supportsDefaultResumeColumn : undefined}
               />
             ))}
           </div>

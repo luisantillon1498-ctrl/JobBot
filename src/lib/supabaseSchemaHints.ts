@@ -9,12 +9,6 @@ export function isMissingProfilesColumnError(err: { message?: string; code?: str
   );
 }
 
-export function isMissingDefaultResumeColumnError(err: { message?: string; code?: string } | null | undefined): boolean {
-  if (!err) return false;
-  const m = (err.message ?? "").toLowerCase();
-  return m.includes("default_resume_document_id") || isMissingProfilesColumnError(err);
-}
-
 export function isMissingCoverLetterToneColumnError(err: { message?: string; code?: string } | null | undefined): boolean {
   if (!err) return false;
   const m = (err.message ?? "").toLowerCase();

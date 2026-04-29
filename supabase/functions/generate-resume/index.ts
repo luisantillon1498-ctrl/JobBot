@@ -632,11 +632,15 @@ serve(async (req) => {
     if (!authHeader) throw new Error("Not authenticated");
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-    const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    // SUPABASE_ANON_KEY is auto-injected by Supabase but shows as "deprecated" in the UI.
+    // Fall back to serviceRoleKey so internal EF-to-EF calls (which pass a user JWT in
+    // the Authorization header) continue to work even if the anon key isn't resolvable.
+    const clientKey = Deno.env.get("SUPABASE_ANON_KEY") || serviceRoleKey;
 
-    // User-scoped client (respects RLS)
-    const userClient = createClient(supabaseUrl, anonKey, {
+    // User-scoped client — auth.getUser() validates the Bearer JWT in the Authorization header
+    // regardless of which API key was used to create the client.
+    const userClient = createClient(supabaseUrl, clientKey, {
       global: { headers: { Authorization: authHeader } },
     });
 

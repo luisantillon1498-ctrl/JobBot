@@ -486,6 +486,27 @@ export default function ApplicationQueue() {
     await loadQueue({ silent: true });
   };
 
+  const handleMarkSubmitted = async (applicationId: string) => {
+    if (!user) return;
+    const now = new Date().toISOString();
+    const { error } = await supabase
+      .from("applications")
+      .update({
+        submission_status: "submitted",
+        automation_queue_state: "submitted",
+        submitted_at: now,
+        automation_live_url: null,
+      })
+      .eq("id", applicationId)
+      .eq("user_id", user.id);
+    if (error) {
+      toast.error(`Could not mark as submitted: ${error.message}`);
+      return;
+    }
+    toast.success("Marked as submitted — great work!");
+    await loadQueue({ silent: true });
+  };
+
   return (
     <AppLayout>
       <div className="space-y-6 animate-fade-in">
@@ -650,6 +671,40 @@ export default function ApplicationQueue() {
                             </div>
                           </div>
                         )}
+                        {row.automation_queue_state === "waiting_for_review" && (
+                          <div className="space-y-3 pt-1">
+                            <Alert variant="default" className="border-blue-500/50 bg-blue-500/5 py-2">
+                              <AlertDescription className="text-sm">
+                                Automation finished filling the form. Open the job page to verify it was submitted, then mark it below — or re-queue if it needs another attempt.
+                              </AlertDescription>
+                            </Alert>
+                            {row.job_url && (
+                              <a
+                                href={row.job_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1.5 text-sm font-medium text-primary underline underline-offset-2"
+                              >
+                                Open job page to verify ↗
+                              </a>
+                            )}
+                            <div className="flex flex-wrap gap-2">
+                              <Button
+                                onClick={() => void handleMarkSubmitted(row.id)}
+                                className="flex-1 bg-green-600 hover:bg-green-700 text-white"
+                              >
+                                Mark as Submitted
+                              </Button>
+                              <Button
+                                variant="outline"
+                                onClick={() => void handleRequeue(row.id)}
+                                className="flex-1"
+                              >
+                                Re-queue
+                              </Button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -790,6 +845,44 @@ export default function ApplicationQueue() {
                                         title="End the active browser session and free the runner for other applications"
                                       >
                                         {killingSessionId === row.id ? "Ending…" : "End Session"}
+                                      </Button>
+                                    </div>
+                                  </div>
+                                </TableCell>
+                              </TableRow>
+                            )}
+                            {row.automation_queue_state === "waiting_for_review" && (
+                              <TableRow key={`${row.id}-review`}>
+                                <TableCell colSpan={5} className="py-3 px-4">
+                                  <div className="space-y-2">
+                                    <p className="text-sm text-muted-foreground">
+                                      Automation finished filling the form. Open the job page to verify it was submitted, then mark it below — or re-queue if it needs another attempt.
+                                    </p>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      {row.job_url && (
+                                        <a
+                                          href={row.job_url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-sm font-medium text-primary underline underline-offset-2 hover:opacity-80"
+                                        >
+                                          Open job page to verify ↗
+                                        </a>
+                                      )}
+                                      <Button
+                                        size="sm"
+                                        onClick={() => void handleMarkSubmitted(row.id)}
+                                        className="bg-green-600 hover:bg-green-700 text-white text-xs"
+                                      >
+                                        Mark as Submitted
+                                      </Button>
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => void handleRequeue(row.id)}
+                                        className="text-xs"
+                                      >
+                                        Re-queue
                                       </Button>
                                     </div>
                                   </div>

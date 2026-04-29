@@ -3,7 +3,7 @@ import { useParams, Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { invokeGenerateCoverLetter } from "@/lib/coverLetterGenerate";
-import { getResumePathForGeneration } from "@/lib/resumeForGeneration";
+import { getOrGenerateApplicationResumePath } from "@/lib/resumeForGeneration";
 import { ensureGeneratedCoverLetterInVault } from "@/lib/saveGeneratedCoverToVault";
 import { AppLayout } from "@/components/AppLayout";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -544,10 +544,19 @@ export default function ApplicationDetail() {
   };
 
   const generateCoverLetter = async () => {
-    if (!user || !app) return;
+    if (!user || !app || !id) return;
     setGenerating(true);
-    const resumePath = await getResumePathForGeneration(supabase, user.id);
     try {
+      // Ensure a tailored resume exists for this application; generate one if not.
+      toast.info("Preparing tailored resume…");
+      const resumePath = await getOrGenerateApplicationResumePath(supabase, id);
+      if (!resumePath) {
+        toast.error(
+          "Could not generate a resume for this application. Check that your Resume Wizard is filled in and the runner is online.",
+        );
+        setGenerating(false);
+        return;
+      }
       await invokeGenerateCoverLetter({
         application_id: id,
         job_title: app.job_title,

@@ -17,7 +17,7 @@ import {
   type ExtractedJobFields,
 } from "@/lib/jobExtraction";
 import { invokeGenerateCoverLetter } from "@/lib/coverLetterGenerate";
-import { getResumePathForGeneration } from "@/lib/resumeForGeneration";
+import { getOrGenerateApplicationResumePath } from "@/lib/resumeForGeneration";
 import { killRunnerSession } from "@/lib/runnerSession";
 import {
   AlertDialog,
@@ -385,7 +385,6 @@ export default function Dashboard() {
     let coversSkipped = 0;
     let coverGenFailed = 0;
     try {
-      const resumePath = await getResumePathForGeneration(supabase, user.id);
       for (let i = 0; i < urls.length; i++) {
         const url = urls[i];
         setBatchQueueMeta({ total: urls.length, remaining: urls.length - i });
@@ -425,6 +424,9 @@ export default function Dashboard() {
           });
           if (shouldAutoGenerateCoverLetter(scrape, fields)) {
             try {
+              // Generate (or reuse) the tailored resume for this application first,
+              // then use its path when generating the cover letter.
+              const resumePath = await getOrGenerateApplicationResumePath(supabase, data.id);
               await invokeGenerateCoverLetter({
                 application_id: data.id,
                 job_title: fields.job_title,
@@ -437,10 +439,6 @@ export default function Dashboard() {
               console.error(clErr);
               coverGenFailed++;
             }
-            // Fire-and-forget tailored resume alongside cover letter
-            supabase.functions
-              .invoke("generate-resume", { body: { application_id: data.id } })
-              .catch(() => {/* non-fatal */});
           } else {
             coversSkipped++;
           }

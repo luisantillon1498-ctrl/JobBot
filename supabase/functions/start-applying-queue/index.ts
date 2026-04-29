@@ -233,11 +233,10 @@ serve(async (req) => {
     const { data: profile } = await serviceClient
       .from("profiles")
       .select(
-        "first_name, middle_name, last_name, professional_email, phone, linkedin_url, city, state_region, country, veteran_status, disability_status, gender, hispanic_ethnicity, race_ethnicity, default_resume_document_id",
+        "first_name, middle_name, last_name, professional_email, phone, linkedin_url, city, state_region, country, veteran_status, disability_status, gender, hispanic_ethnicity, race_ethnicity",
       )
       .eq("user_id", user.id)
       .single();
-    console.log("[EF] profile loaded — default_resume_document_id:", profile?.default_resume_document_id ?? "(none)");
 
     async function ensureCoverFromArtifact(args: {
       applicationId: string;
@@ -439,7 +438,7 @@ serve(async (req) => {
       // to the DB rather than leaving the app permanently stuck in `autofilling`.
       try {
 
-      let resumeDocumentId = app.submitted_resume_document_id ?? profile?.default_resume_document_id ?? null;
+      let resumeDocumentId = app.submitted_resume_document_id ?? null;
       let coverDocumentId = app.submitted_cover_document_id ?? null;
 
       // Fall back to the most recently linked/generated resume for this application
@@ -465,33 +464,30 @@ serve(async (req) => {
       // or cases where the user hasn't manually selected a resume.
       if (!resumeDocumentId) {
         console.log(`[EF] app ${appId} — no resume found, generating tailored resume via Edge Function`);
-        const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
-        if (!anonKey) {
-          console.error(`[EF] app ${appId} — SUPABASE_ANON_KEY is not set; skipping resume generation`);
-        } else {
-          const generateRes = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/generate-resume`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: authHeader,
-              apikey: anonKey,
-            },
-            body: JSON.stringify({ application_id: appId }),
-            signal: AbortSignal.timeout(120_000),
-          });
-          console.log(`[EF] app ${appId} — resume gen HTTP status:`, generateRes.status);
-          if (generateRes.ok) {
-            const genBody = await generateRes.json() as { ok?: boolean; document_id?: string; error?: string; code?: string };
-            if (genBody.ok && genBody.document_id) {
-              resumeDocumentId = genBody.document_id;
-              console.log(`[EF] app ${appId} — generated resume document_id: ${resumeDocumentId}`);
-            } else {
-              console.error(`[EF] app ${appId} — generate-resume returned ok=false: code=${genBody.code} error=${genBody.error}`);
-            }
+        const generateRes = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/generate-resume`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            // Forward the user's JWT so generate-resume can resolve the caller via getUser().
+            // Use serviceRoleKey as the apikey header (replaces the deprecated SUPABASE_ANON_KEY).
+            Authorization: authHeader,
+            apikey: serviceRoleKey,
+          },
+          body: JSON.stringify({ application_id: appId }),
+          signal: AbortSignal.timeout(120_000),
+        });
+        console.log(`[EF] app ${appId} — resume gen HTTP status:`, generateRes.status);
+        if (generateRes.ok) {
+          const genBody = await generateRes.json() as { ok?: boolean; document_id?: string; error?: string; code?: string };
+          if (genBody.ok && genBody.document_id) {
+            resumeDocumentId = genBody.document_id;
+            console.log(`[EF] app ${appId} — generated resume document_id: ${resumeDocumentId}`);
           } else {
-            const errText = await generateRes.text().catch(() => "");
-            console.error(`[EF] app ${appId} — generate-resume HTTP error ${generateRes.status}: ${errText.slice(0, 500)}`);
+            console.error(`[EF] app ${appId} — generate-resume returned ok=false: code=${genBody.code} error=${genBody.error}`);
           }
+        } else {
+          const errText = await generateRes.text().catch(() => "");
+          console.error(`[EF] app ${appId} — generate-resume HTTP error ${generateRes.status}: ${errText.slice(0, 500)}`);
         }
       }
 
@@ -556,8 +552,10 @@ serve(async (req) => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            // Forward the user's JWT so generate-cover-letter can resolve the caller via getUser().
+            // Use serviceRoleKey as the apikey header (replaces the deprecated SUPABASE_ANON_KEY).
             Authorization: authHeader,
-            apikey: Deno.env.get("SUPABASE_ANON_KEY")!,
+            apikey: serviceRoleKey,
           },
           body: JSON.stringify({
             application_id: appId,

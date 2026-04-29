@@ -177,9 +177,13 @@ serve(async (req) => {
     const authHeader = req.headers.get("authorization");
     if (!authHeader) throw new Error("Not authenticated");
 
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    // SUPABASE_ANON_KEY is auto-injected but shows as "deprecated" in the UI.
+    // Fall back to serviceRoleKey so internal EF-to-EF calls work without the anon key.
+    const clientKey = Deno.env.get("SUPABASE_ANON_KEY") || serviceRoleKey;
     const supabaseClient = createClient(
       Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_ANON_KEY")!,
+      clientKey,
       { global: { headers: { Authorization: authHeader } } }
     );
 
