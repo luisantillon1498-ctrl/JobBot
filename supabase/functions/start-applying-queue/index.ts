@@ -474,7 +474,9 @@ serve(async (req) => {
             apikey: serviceRoleKey,
           },
           body: JSON.stringify({ application_id: appId }),
-          signal: AbortSignal.timeout(120_000),
+          // Keep well under the EF wall-clock limit so a slow AI/PDF call never
+          // prevents the browser automation runner from being reached.
+          signal: AbortSignal.timeout(30_000),
         });
         console.log(`[EF] app ${appId} — resume gen HTTP status:`, generateRes.status);
         if (generateRes.ok) {
