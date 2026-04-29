@@ -414,15 +414,6 @@ serve(async (req) => {
       let resumeDocumentId = app.submitted_resume_document_id ?? profile?.default_resume_document_id ?? null;
       let coverDocumentId = app.submitted_cover_document_id ?? null;
 
-      if (!app.submitted_resume_document_id && resumeDocumentId) {
-        await serviceClient
-          .from("applications")
-          .update({ submitted_resume_document_id: resumeDocumentId })
-          .eq("id", appId)
-          .eq("user_id", user.id)
-          .neq("submission_status", "submitted");
-      }
-
       // Fall back to the most recently linked/generated resume for this application
       // (generate-resume stores the PDF in application_documents but does not set
       //  submitted_resume_document_id, so we need a separate lookup here).
@@ -439,6 +430,41 @@ serve(async (req) => {
           resumeDocumentId = linkedResume.data.document_id;
           console.log(`[EF] app ${appId} — found linked resume via application_documents: ${resumeDocumentId}`);
         }
+      }
+
+      // Still no resume — generate one on the fly (mirrors cover letter generation below).
+      // This handles applications that were imported before auto-resume-generation was added,
+      // or cases where the user hasn't manually selected a resume.
+      if (!resumeDocumentId) {
+        console.log(`[EF] app ${appId} — no resume found, generating tailored resume via Edge Function`);
+        const generateRes = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/generate-resume`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: authHeader,
+            apikey: Deno.env.get("SUPABASE_ANON_KEY")!,
+          },
+          body: JSON.stringify({ application_id: appId }),
+        });
+        console.log(`[EF] app ${appId} — resume gen response:`, generateRes.status);
+        if (generateRes.ok) {
+          const genBody = await generateRes.json() as { ok?: boolean; document_id?: string };
+          if (genBody.ok && genBody.document_id) {
+            resumeDocumentId = genBody.document_id;
+            console.log(`[EF] app ${appId} — generated resume document_id: ${resumeDocumentId}`);
+          }
+        }
+      }
+
+      // Pin whichever resume we resolved (default, linked, or freshly generated) so future
+      // runs skip the resolution chain entirely.
+      if (!app.submitted_resume_document_id && resumeDocumentId) {
+        await serviceClient
+          .from("applications")
+          .update({ submitted_resume_document_id: resumeDocumentId })
+          .eq("id", appId)
+          .eq("user_id", user.id)
+          .neq("submission_status", "submitted");
       }
 
       if (!coverDocumentId) {
