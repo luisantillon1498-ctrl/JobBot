@@ -51,7 +51,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen bg-background flex">
       {/* ── Desktop sidebar (md+) ── */}
-      <aside className="hidden md:flex w-64 border-r border-border bg-card flex-col shrink-0">
+      <aside className="hidden md:flex w-64 border-r border-border bg-card flex-col shrink-0 h-screen sticky top-0">
         <div className="p-6 border-b border-border">
           <Link to="/dashboard" className="flex items-center gap-2">
             <Bot className="h-7 w-7 text-primary" />
