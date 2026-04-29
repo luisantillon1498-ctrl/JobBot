@@ -655,12 +655,19 @@ async function serveNoVnc(req, res) {
   ];
 
   for (const candidate of candidates) {
-    if (!candidate.startsWith(NOVNC_STATIC)) continue; // path traversal guard
+    // Path traversal guard — require the path to be inside NOVNC_STATIC directory (not just prefixed)
+    if (!candidate.startsWith(NOVNC_STATIC + path.sep) && candidate !== NOVNC_STATIC) continue;
     try {
       const stat = await fs.stat(candidate);
       if (stat.isFile()) {
         const ext = path.extname(candidate).toLowerCase();
-        res.writeHead(200, { "Content-Type": MIME[ext] ?? "application/octet-stream" });
+        res.writeHead(200, {
+          "Content-Type": MIME[ext] ?? "application/octet-stream",
+          // Only allow embedding from the same origin (the JobPal Pro frontend).
+          // This prevents anyone who learns the VNC URL from framing the live session.
+          "X-Frame-Options": "SAMEORIGIN",
+          "Content-Security-Policy": "frame-ancestors 'self'",
+        });
         createReadStream(candidate).pipe(res);
         return;
       }

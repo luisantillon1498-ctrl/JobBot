@@ -18,6 +18,7 @@ import {
 } from "@/lib/jobExtraction";
 import { invokeGenerateCoverLetter } from "@/lib/coverLetterGenerate";
 import { getResumePathForGeneration } from "@/lib/resumeForGeneration";
+import { killRunnerSession } from "@/lib/runnerSession";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -91,7 +92,10 @@ interface Application {
   applied_at: string | null;
   location: string | null;
   submitted_cover_document_id: string | null;
+  automation_queue_state: string | null;
 }
+
+const ACTIVE_AUTOMATION_STATES = new Set(["autofilling", "waiting_for_human_action", "human_action_completed"]);
 
 type ApplicationSortKey =
   | "job_title"
@@ -267,7 +271,7 @@ async function loadApplicationsAndSparkle(userId: string): Promise<{
   const { data: apps, error: appsError } = await supabase
     .from("applications")
     .select(
-      "id, company_name, job_title, submission_status, application_status, outcome, updated_at, applied_at, location, submitted_cover_document_id",
+      "id, company_name, job_title, submission_status, application_status, outcome, updated_at, applied_at, location, submitted_cover_document_id, automation_queue_state",
     )
     .eq("user_id", userId)
     .order("updated_at", { ascending: false });
@@ -469,6 +473,10 @@ export default function Dashboard() {
     if (!deleteTarget) return;
     const id = deleteTarget.id;
     setDeleting(true);
+
+    // 0. If automation is running for this app, kill the runner session first (best-effort).
+    //    This frees the single-session lock so other apps can start.
+    killRunnerSession(id).catch(() => {/* non-fatal — runner may already be free */});
 
     // 1. Find all documents linked to this application
     const { data: linkedDocs } = await supabase
@@ -900,17 +908,26 @@ export default function Dashboard() {
                             {format(new Date(app.updated_at), "MMM d, yyyy")}
                           </TableCell>
                           <TableCell className="text-right pr-2">
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="text-muted-foreground hover:text-destructive h-8 w-8"
-                              title="Delete application"
-                              aria-label={`Delete ${app.job_title} at ${app.company_name}`}
-                              onClick={() => setDeleteTarget(app)}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
+                            <div className="flex items-center justify-end gap-1">
+                              {app.automation_queue_state && ACTIVE_AUTOMATION_STATES.has(app.automation_queue_state) && (
+                                <span title="Automation running" className="inline-flex h-2 w-2 rounded-full bg-amber-500 animate-pulse" />
+                              )}
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="text-muted-foreground hover:text-destructive h-8 w-8"
+                                title={
+                                  app.automation_queue_state && ACTIVE_AUTOMATION_STATES.has(app.automation_queue_state)
+                                    ? "Automation is running — deleting will stop it"
+                                    : "Delete application"
+                                }
+                                aria-label={`Delete ${app.job_title} at ${app.company_name}`}
+                                onClick={() => setDeleteTarget(app)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
                           </TableCell>
                         </TableRow>
                       ))}

@@ -191,7 +191,9 @@ serve(async (req) => {
         .neq("submission_status", "submitted");
       if (byIdError) return json(500, { error: byIdError.message || "Could not load applications" });
       const rowById = new Map((rows ?? []).map((r) => [String((r as AppRow).id), r as AppRow]));
-      let ordered = clientApplicationIds.map((id) => rowById.get(id)).filter((r): r is AppRow => Boolean(r));
+      // Deduplicate IDs (same ID passed twice would cause double-processing on the runner)
+      const deduped = [...new Set(clientApplicationIds)];
+      let ordered = deduped.map((id) => rowById.get(id)).filter((r): r is AppRow => Boolean(r));
       ordered = ordered.filter((r) => !r.automation_queue_excluded && Boolean(r.job_url));
       if (resumeMode) {
         ordered = ordered.filter((r) => r.automation_queue_state === "waiting_for_human_action");
@@ -411,6 +413,11 @@ serve(async (req) => {
         context: { queue_priority: app.automation_queue_priority, job_url: app.job_url },
       });
 
+      // Wrap everything after writing `autofilling` in a per-app try/catch so that any
+      // unhandled exception (e.g. in document resolution or generation) writes `failed`
+      // to the DB rather than leaving the app permanently stuck in `autofilling`.
+      try {
+
       let resumeDocumentId = app.submitted_resume_document_id ?? profile?.default_resume_document_id ?? null;
       let coverDocumentId = app.submitted_cover_document_id ?? null;
 
@@ -445,6 +452,7 @@ serve(async (req) => {
             apikey: Deno.env.get("SUPABASE_ANON_KEY")!,
           },
           body: JSON.stringify({ application_id: appId }),
+          signal: AbortSignal.timeout(60_000),
         });
         console.log(`[EF] app ${appId} — resume gen response:`, generateRes.status);
         if (generateRes.ok) {
@@ -527,6 +535,7 @@ serve(async (req) => {
             job_description: app.job_description ?? "",
             resume_path: resumeForGeneration.data?.file_path ?? null,
           }),
+          signal: AbortSignal.timeout(60_000),
         });
 
         console.log(`[EF] app ${appId} — cover letter gen response:`, generateRes.status);
@@ -676,6 +685,19 @@ serve(async (req) => {
       // Playwright process on the shared VNC display while one is paused would
       // overwrite the live browser view and cause conflicting data entry.
       if (last?.hard_blocker || last?.state === "waiting_for_human_action" || last?.state === "waiting_for_review") hardStop = true;
+
+      } catch (appError) {
+        // Per-app error guard: ensure the app is never left stuck in `autofilling`.
+        const reason = appError instanceof Error ? appError.message : "Internal error during queue processing";
+        console.error(`[EF] per-app unhandled error for ${appId}:`, reason);
+        await logState({
+          appId,
+          state: "failed",
+          description: "Unexpected error during automation startup",
+          reason,
+        }).catch((e) => console.error(`[EF] failed to write error state for ${appId}:`, e));
+        outcomes.push({ application_id: appId, state: "failed", hard_blocker: false, reason });
+      }
     }
 
     // ── Shared result processor ──────────────────────────────────────────────

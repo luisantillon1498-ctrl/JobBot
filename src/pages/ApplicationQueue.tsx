@@ -37,6 +37,9 @@ type QueueRow = QueueApplication & {
 
 const READY_TO_SUBMIT_QUEUE_STATE = "ready_to_submit";
 
+/** States where automation is actively running — trigger background polling. */
+const TRANSIENT_AUTOMATION_STATES = new Set(["autofilling", "human_action_completed"]);
+
 /** States that appear in the User queue (review / handoff / final approval). */
 const USER_QUEUE_STATES = new Set([
   "waiting_for_review",
@@ -161,6 +164,12 @@ export default function ApplicationQueue() {
     [jobBotRows, userRows],
   );
 
+  /** True when any app is in a transient automation state (autofilling / resuming). */
+  const hasTransientApps = useMemo(
+    () => [...jobBotRows, ...userRows].some((r) => TRANSIENT_AUTOMATION_STATES.has(r.automation_queue_state)),
+    [jobBotRows, userRows],
+  );
+
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
@@ -194,6 +203,15 @@ export default function ApplicationQueue() {
       cancelled = true;
     };
   }, [user]);
+
+  // Poll every 5 s while any app is in a transient automation state so state transitions
+  // (autofilling → waiting_for_human_action, human_action_completed → waiting_for_review)
+  // surface without requiring a manual page reload.
+  useEffect(() => {
+    if (!user || !hasTransientApps || starting) return;
+    const interval = setInterval(() => void loadQueue({ silent: true }), 5_000);
+    return () => clearInterval(interval);
+  }, [user, hasTransientApps, starting]);
 
   const moveRow = (index: number, direction: "up" | "down") => {
     setJobBotRows((prev) => {
@@ -372,10 +390,21 @@ export default function ApplicationQueue() {
   };
 
   const handleResume = async (applicationId: string) => {
+    // Prevent any concurrent resume (double-click or top-button + row-button race)
+    if (resumingId !== null) return;
     setResumingId(applicationId);
     try {
-      await startApplyingQueue({ applicationIds: [applicationId], resume: true });
-      toast.success("Automation resumed");
+      const result = await startApplyingQueue({ applicationIds: [applicationId], resume: true });
+      const outcome = result.outcomes.find((o) => o.application_id === applicationId);
+      if (outcome?.state === "waiting_for_human_action") {
+        // Runner returned 404 — no active session (likely after a server restart)
+        toast.error(
+          "No active browser session found. Click Start Applying to restart automation from scratch.",
+          { duration: 6000 },
+        );
+      } else {
+        toast.success("Automation resumed");
+      }
       await loadQueue({ silent: true });
     } catch (err) {
       toast.error("Failed to resume automation");
@@ -385,10 +414,24 @@ export default function ApplicationQueue() {
   };
 
   const handleFreeRunner = async () => {
+    if (!user) return;
     setFreeingRunner(true);
     try {
       const result = await killRunnerSession(); // no applicationId = kill all
       if (result.killed) {
+        // Reset all waiting_for_human_action apps to failed so the DB matches reality
+        const waitingIds = humanActionRows.map((r) => r.id);
+        if (waitingIds.length > 0) {
+          await supabase
+            .from("applications")
+            .update({
+              automation_queue_state: "failed",
+              automation_live_url: null,
+              automation_last_error: "Session freed by user",
+            })
+            .in("id", waitingIds)
+            .eq("user_id", user.id);
+        }
         toast.success("Runner freed — all active browser sessions ended");
       } else {
         toast.info("Runner was already free — no active sessions to end");
@@ -402,9 +445,20 @@ export default function ApplicationQueue() {
   };
 
   const handleEndSession = async (applicationId: string) => {
+    if (!user) return;
     setKillingSessionId(applicationId);
     try {
       await killRunnerSession(applicationId);
+      // Update DB state so the app doesn't stay permanently in waiting_for_human_action
+      await supabase
+        .from("applications")
+        .update({
+          automation_queue_state: "failed",
+          automation_live_url: null,
+          automation_last_error: "Session ended by user",
+        })
+        .eq("id", applicationId)
+        .eq("user_id", user.id);
       toast.success("Session ended — runner is now free to start another application");
       await loadQueue({ silent: true });
     } catch {
@@ -412,6 +466,17 @@ export default function ApplicationQueue() {
     } finally {
       setKillingSessionId(null);
     }
+  };
+
+  const handleRequeue = async (applicationId: string) => {
+    if (!user) return;
+    await supabase
+      .from("applications")
+      .update({ automation_queue_state: null, automation_live_url: null, automation_last_error: null })
+      .eq("id", applicationId)
+      .eq("user_id", user.id);
+    toast.success("Application re-queued — it will appear in JobBot's queue");
+    await loadQueue({ silent: true });
   };
 
   return (
@@ -497,6 +562,16 @@ export default function ApplicationQueue() {
                             {statusLabel(row)}
                           </Badge>
                         </div>
+                        {row.automation_queue_state === "failed" && (
+                          <div className="flex items-center gap-2 pt-1">
+                            {row.automation_last_error && (
+                              <p className="text-xs text-muted-foreground flex-1 truncate">{row.automation_last_error}</p>
+                            )}
+                            <Button size="sm" variant="outline" className="text-xs shrink-0" onClick={() => void handleRequeue(row.id)}>
+                              Re-queue
+                            </Button>
+                          </div>
+                        )}
                         {row.automation_queue_state === "waiting_for_human_action" && (
                           <div className="space-y-3">
                             <Alert variant="default" className="border-amber-500/50 bg-amber-500/5 py-2">
@@ -551,7 +626,7 @@ export default function ApplicationQueue() {
                             <div className="flex flex-wrap gap-2">
                               <Button
                                 onClick={() => void handleResume(row.id)}
-                                disabled={resumingId === row.id || killingSessionId === row.id}
+                                disabled={resumingId !== null || killingSessionId === row.id}
                                 className="flex-1 bg-amber-600 hover:bg-amber-700 text-white"
                               >
                                 {resumingId === row.id ? "Resuming…" : "Resume Automation"}
@@ -559,7 +634,7 @@ export default function ApplicationQueue() {
                               <Button
                                 variant="outline"
                                 onClick={() => void handleEndSession(row.id)}
-                                disabled={killingSessionId === row.id || resumingId === row.id}
+                                disabled={killingSessionId === row.id || resumingId !== null}
                                 className="border-amber-500/50 text-amber-700 dark:text-amber-400 hover:bg-amber-500/10"
                                 title="End the active browser session and free the runner for other applications"
                               >
@@ -616,6 +691,27 @@ export default function ApplicationQueue() {
                               <TableCell className="text-muted-foreground">{row.selected_resume_label}</TableCell>
                               <TableCell className="text-muted-foreground">{row.selected_cover_label}</TableCell>
                             </TableRow>
+                            {row.automation_queue_state === "failed" && (
+                              <TableRow key={`${row.id}-requeue`}>
+                                <TableCell colSpan={5} className="py-2 px-4">
+                                  <div className="flex items-center gap-3">
+                                    {row.automation_last_error && (
+                                      <p className="text-xs text-muted-foreground flex-1 truncate">
+                                        {row.automation_last_error}
+                                      </p>
+                                    )}
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => void handleRequeue(row.id)}
+                                      className="shrink-0 text-xs"
+                                    >
+                                      Re-queue
+                                    </Button>
+                                  </div>
+                                </TableCell>
+                              </TableRow>
+                            )}
                             {row.automation_queue_state === "waiting_for_human_action" && (
                               <TableRow key={`${row.id}-live`}>
                                 <TableCell colSpan={5} className="p-0">
@@ -674,7 +770,7 @@ export default function ApplicationQueue() {
                                     <div className="flex gap-2">
                                       <Button
                                         onClick={() => void handleResume(row.id)}
-                                        disabled={resumingId === row.id || killingSessionId === row.id}
+                                        disabled={resumingId !== null || killingSessionId === row.id}
                                         className="flex-1 bg-amber-600 hover:bg-amber-700 text-white"
                                       >
                                         {resumingId === row.id ? "Resuming…" : "Resume Automation"}
@@ -682,7 +778,7 @@ export default function ApplicationQueue() {
                                       <Button
                                         variant="outline"
                                         onClick={() => void handleEndSession(row.id)}
-                                        disabled={killingSessionId === row.id || resumingId === row.id}
+                                        disabled={killingSessionId === row.id || resumingId !== null}
                                         className="border-amber-500/50 text-amber-700 dark:text-amber-400 hover:bg-amber-500/10"
                                         title="End the active browser session and free the runner for other applications"
                                       >
