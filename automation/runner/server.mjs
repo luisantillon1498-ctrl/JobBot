@@ -452,10 +452,14 @@ async function runAutomation(payload) {
     const vncUrl = buildVncUrl();
     console.log(`[runner] App ${appId} paused for human action. VNC: ${vncUrl}`);
 
+    // Delete the paused-file so the post-resume monitor in handleResume can detect
+    // a second write (e.g. the review pause after CAPTCHA is cleared and form filled).
+    await fs.rm(pausedFile, { force: true }).catch(() => {});
+
     // Store session so /resume can signal and await it.
-    // Also store userId so the auto-exit handler can call pushToSupabase.
+    // pausedFile is stored so the multi-pause monitor loop can re-watch for it.
     const sessionUserId = String(payload?.user_id ?? "");
-    activeSessions.set(appId, { proc, doneFile, exitPromise, tempDir, outputDir, cleanupPaths, runId });
+    activeSessions.set(appId, { proc, doneFile, pausedFile, exitPromise, tempDir, outputDir, cleanupPaths, runId });
 
     // Auto-exit handler: if Playwright exits without /resume ever being called
     // (e.g. spec auto-detected submission and exited on its own), push the final
@@ -608,6 +612,7 @@ async function handleResume(appId, userId) {
     };
   }
 
+  // Write the done-signal so Playwright can continue from its current wait point.
   console.log(`[resume] Writing done-signal for ${appId}`);
   try {
     await fs.writeFile(session.doneFile, "done");
@@ -615,19 +620,92 @@ async function handleResume(appId, userId) {
     return { httpStatus: 500, body: { error: `Could not write done signal: ${e.message}` } };
   }
 
-  // Fire-and-forget: let Playwright finish in the background and write the final
-  // state to Supabase directly. The caller (Edge Function) gets a 202 immediately
-  // and does not need to wait — Supabase Edge Function timeouts are avoided.
+  // If the multi-pause monitor loop is already running (this is a second /resume,
+  // e.g. the user clicked Resume Automation for the review phase), the existing loop
+  // will pick up the done-signal we just wrote. Return immediately without spawning
+  // a duplicate background task.
+  if (session.monitorStarted) {
+    console.log(`[resume] Monitor already running for ${appId} — done signal written, returning 202.`);
+    return { httpStatus: 202, body: { status: "human_action_completed", message: "Resume signal sent; automation continuing in background." } };
+  }
+  session.monitorStarted = true;
+
+  // ── Multi-pause monitor loop ───────────────────────────────────────────────
+  // Playwright may pause more than once per run (CAPTCHA → form fill → review pause).
+  // This loop watches for each re-pause and updates Supabase so the live browser
+  // stays available to the user. It exits when Playwright finally terminates.
   const bgUserId = userId;
   (async () => {
     try {
-      console.log(`[resume] Awaiting Playwright completion for ${appId} in background ...`);
+      while (true) {
+        // Delete paused.signal before the race so we detect only FRESH writes.
+        // (runAutomation already deleted it after the first pause; subsequent loop
+        //  iterations delete the file left by the previous re-pause detection.)
+        await fs.rm(session.pausedFile, { force: true }).catch(() => {});
+
+        console.log(`[resume] Monitoring ${appId}: waiting for exit or re-pause …`);
+        let winner;
+        try {
+          winner = await Promise.race([
+            session.exitPromise.then(() => "exited"),
+            waitForFile(session.pausedFile, RUN_TIMEOUT_MS).then((found) => (found ? "re-paused" : "timeout")),
+          ]);
+        } catch {
+          winner = "exited";
+        }
+
+        if (winner === "re-paused") {
+          // Playwright paused again — form is filled, live browser shows the review view.
+          const vncUrl = buildVncUrl();
+          console.log(`[resume] App ${appId} re-paused for review. VNC: ${vncUrl}`);
+
+          if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
+            try {
+              const reviewPatch = {
+                automation_queue_state: "waiting_for_human_action",
+                automation_live_url: vncUrl,
+                automation_last_error:
+                  "Form filled — review it in the live browser above, submit the application, then click Resume Automation.",
+                automation_last_outcome: "waiting_for_human_action",
+                automation_last_run_at: new Date().toISOString(),
+              };
+              const patchRes = await fetch(
+                `${SUPABASE_URL}/rest/v1/applications?id=eq.${encodeURIComponent(appId)}&user_id=eq.${encodeURIComponent(bgUserId)}&submission_status=neq.submitted`,
+                {
+                  method: "PATCH",
+                  headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+                    apikey: SUPABASE_SERVICE_ROLE_KEY,
+                    Prefer: "return=minimal",
+                  },
+                  body: JSON.stringify(reviewPatch),
+                },
+              );
+              if (!patchRes.ok) {
+                console.error(`[resume] PATCH review-pause failed: ${patchRes.status} ${await patchRes.text()}`);
+              } else {
+                console.log(`[resume] App ${appId} → waiting_for_human_action (review phase)`);
+              }
+            } catch (e) {
+              console.error("[resume] PATCH review-pause error:", e.message);
+            }
+          }
+          // Loop continues: next iteration watches for exit or yet another re-pause.
+          // When the user clicks Resume Automation for the review, handleResume writes
+          // doneFile (early return path above since monitorStarted=true), Playwright
+          // gets the signal and exits, and the next race resolves with "exited".
+        } else {
+          // Playwright exited (or timed out) — read artifacts and push final state.
+          break;
+        }
+      }
+
+      console.log(`[resume] Playwright exited for ${appId} — reading artifacts …`);
       const procResult = await session.exitPromise;
       console.log(`[resume] Playwright finished for ${appId} with code ${procResult.code}`);
 
-      // Guard against double-push: the auto-exit handler (exitPromise.then in
-      // runAutomation) runs first and deletes the session.  If it already ran,
-      // wasActive is false and we skip — pushToSupabase was already called there.
+      // Guard against double-push with the auto-exit handler in runAutomation.
       const wasActive = activeSessions.delete(appId);
       if (!wasActive) {
         console.log(`[resume] Session for ${appId} already cleaned up by auto-exit handler — skipping duplicate push.`);
@@ -636,7 +714,6 @@ async function handleResume(appId, userId) {
 
       const { httpStatus, body } = await readArtifacts(session.outputDir, session.runId, procResult);
       console.log(`[resume] Artifacts read for ${appId}: status=${body.status}`);
-
       await pushToSupabase(appId, bgUserId, body);
     } catch (e) {
       console.error(`[resume] Background completion failed for ${appId}:`, e.message);
