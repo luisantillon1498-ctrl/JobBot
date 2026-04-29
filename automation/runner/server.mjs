@@ -23,6 +23,13 @@ const VNC_WS_PORT = 6080;
 // noVNC static files (installed by `apt-get install novnc`)
 const NOVNC_STATIC = "/usr/share/novnc";
 
+// Origin(s) allowed to embed the noVNC iframe.
+// Set JOBPAL_FRONTEND_ORIGIN in Railway to the exact frontend URL, e.g.:
+//   https://your-app.lovable.app
+// Multiple space-separated origins are supported.
+// Defaults to * (any origin) so the iframe works out-of-the-box without config.
+const FRAME_ANCESTORS = (process.env.JOBPAL_FRONTEND_ORIGIN?.trim() || "*");
+
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js":   "application/javascript",
@@ -663,10 +670,10 @@ async function serveNoVnc(req, res) {
         const ext = path.extname(candidate).toLowerCase();
         res.writeHead(200, {
           "Content-Type": MIME[ext] ?? "application/octet-stream",
-          // Only allow embedding from the same origin (the JobPal Pro frontend).
-          // This prevents anyone who learns the VNC URL from framing the live session.
-          "X-Frame-Options": "SAMEORIGIN",
-          "Content-Security-Policy": "frame-ancestors 'self'",
+          // Allow the JobPal frontend to embed the noVNC iframe.
+          // X-Frame-Options does not support multiple origins and is superseded by CSP;
+          // omit it so it doesn't override the more specific frame-ancestors directive.
+          "Content-Security-Policy": `frame-ancestors 'self' ${FRAME_ANCESTORS}`,
         });
         createReadStream(candidate).pipe(res);
         return;
