@@ -734,7 +734,7 @@ export default function Dashboard() {
                     </div>
                   ))}
                 </div>
-                <div className="hidden md:block rounded-md border border-border">
+                <div className="hidden md:block rounded-md border border-border overflow-x-auto">
                   <Table>
                     <TableHeader>
                       <TableRow className="hover:bg-transparent">
@@ -751,7 +751,7 @@ export default function Dashboard() {
                           onFilterChange={(v) => setColumnFilter("job_title", v)}
                           filterPlaceholder="Filter title…"
                           filterAriaLabel="Filter by job title"
-                          className="min-w-[140px]"
+                          className="min-w-[130px]"
                         />
                         <FilterableSortableColumnHead
                           label="Company"
@@ -763,7 +763,7 @@ export default function Dashboard() {
                           onFilterChange={(v) => setColumnFilter("company_name", v)}
                           filterPlaceholder="Filter company…"
                           filterAriaLabel="Filter by company"
-                          className="min-w-[120px]"
+                          className="min-w-[110px]"
                         />
                         <FilterableSortableColumnHead
                           label="Location"
@@ -775,10 +775,10 @@ export default function Dashboard() {
                           onFilterChange={(v) => setColumnFilter("location", v)}
                           filterPlaceholder="Filter location…"
                           filterAriaLabel="Filter by location"
-                          className="min-w-[100px]"
+                          className="min-w-[90px]"
                         />
                         <FilterableSortableColumnHead
-                          label="Submission Status"
+                          label="Status"
                           columnKey="submission_status"
                           activeKey={sortKey}
                           dir={sortDir}
@@ -787,9 +787,10 @@ export default function Dashboard() {
                           onFilterChange={(v) => setColumnFilter("submission_status", v)}
                           filterPlaceholder="e.g. Submitted"
                           filterAriaLabel="Filter by submission status"
+                          className="min-w-[90px]"
                         />
                         <FilterableSortableColumnHead
-                          label="Application Stage"
+                          label="Stage"
                           columnKey="application_status"
                           activeKey={sortKey}
                           dir={sortDir}
@@ -798,6 +799,7 @@ export default function Dashboard() {
                           onFilterChange={(v) => setColumnFilter("application_status", v)}
                           filterPlaceholder="e.g. Screening"
                           filterAriaLabel="Filter by application stage"
+                          className="min-w-[90px]"
                         />
                         <FilterableSortableColumnHead
                           label="Outcome"

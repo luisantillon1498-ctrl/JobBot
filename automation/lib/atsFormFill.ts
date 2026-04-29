@@ -567,7 +567,7 @@ function buildMappingPlan(site: AtsPlanSite, candidates: CandidateField[], paylo
   };
 }
 
-async function fillWithPlan(page: Page, mapped: MappedField, value: string): Promise<FillAttemptResult> {
+async function fillWithPlan(page: Page, mapped: MappedField, value: string, humanLike = false): Promise<FillAttemptResult> {
   const loc = page.locator(mapped.selector).first();
   if ((await loc.count()) === 0) return { matched: false };
   const previousValue = ((await loc.inputValue().catch(() => "")) ?? "").trim();
@@ -683,7 +683,20 @@ async function fillWithPlan(page: Page, mapped: MappedField, value: string): Pro
         await loc.selectOption({ label: value }).catch(() => loc.selectOption(value).catch(() => {}));
       }
     } else {
-      await loc.fill(value);
+      if (humanLike) {
+        // Use character-by-character typing so the page receives authentic
+        // keydown/keypress/input/keyup events per character — the same event
+        // sequence a real user produces.  Ashby (and similar React-based ATS
+        // platforms) use behavioral analytics that flag sessions where fields
+        // were set in one shot via fill() with no keystroke history, causing
+        // the submit to be blocked even when the human clicks the button.
+        await loc.click({ timeout: 2000 }).catch(() => {});
+        await loc.fill(""); // clear any pre-filled value first
+        const typingDelay = 25 + Math.floor(Math.random() * 20); // 25–44 ms per char
+        await loc.pressSequentially(value, { delay: typingDelay });
+      } else {
+        await loc.fill(value);
+      }
     }
   }
 
@@ -711,19 +724,26 @@ async function fillAshbyCustomDropdowns(page: Page, payload: ApplicantPayload): 
         const text = await labelEl.textContent().catch(() => "");
         if (!text || !labelPattern.test(text)) continue;
 
-        // Look for a combobox/listbox trigger near this label
-        const parent = labelEl.locator("xpath=..");
-        const trigger = parent.locator("[role=\"combobox\"], [aria-haspopup], button[aria-expanded]").first();
-        if ((await trigger.count()) > 0) {
-          triggerEl = trigger;
-          break;
+        // Walk up to 3 ancestor levels looking for a dropdown trigger scoped
+        // to this label's subtree.  Never fall back to a page-global locator —
+        // that was returning the first Select on the page regardless of which
+        // field it belonged to, causing wrong-field selections.
+        for (const ancestor of [
+          labelEl.locator("xpath=.."),
+          labelEl.locator("xpath=../.."),
+          labelEl.locator("xpath=../../.."),
+        ]) {
+          const trigger = ancestor
+            .locator(
+              "[role='combobox'], [aria-haspopup], button[aria-expanded], [data-testid*='select'], [class*='Select']",
+            )
+            .first();
+          if ((await trigger.count()) > 0) {
+            triggerEl = trigger;
+            break;
+          }
         }
-        // Try siblings/nearby divs with dropdown characteristics
-        const nearbyTrigger = page.locator("[data-testid*=\"select\"], [class*=\"Select\"], [class*=\"dropdown\"]").first();
-        if ((await nearbyTrigger.count()) > 0) {
-          triggerEl = nearbyTrigger;
-          break;
-        }
+        if (triggerEl) break;
       }
 
       if (!triggerEl) continue;
@@ -762,6 +782,13 @@ export async function fillAtsApplicationForm(page: Page, payload: ApplicantPaylo
   const filesUploaded: string[] = [];
   const fieldMappings: Record<string, string> = {};
   const changeLog: FillReport["changeLog"] = [];
+
+  // Ashby uses behavioral analytics to detect bot-filled sessions.  Switching
+  // to character-by-character keystroke simulation (pressSequentially) and
+  // adding small inter-field pauses makes the session look human-typed, which
+  // prevents the backend from blocking the submit even when the user clicks it.
+  const humanLike = site === "ashby";
+
   const candidates = await extractFieldCandidates(page);
   const mappingPlan = buildMappingPlan(site, candidates, payload);
   console.log("[fill] candidates found:", candidates.length);
@@ -784,13 +811,18 @@ export async function fillAtsApplicationForm(page: Page, payload: ApplicantPaylo
       continue;
     }
 
-    const result = await fillWithPlan(page, mapped, value);
+    const result = await fillWithPlan(page, mapped, value, humanLike);
     if (!result.matched) {
       console.log(`[fill] NOMATCH ${target}: selector=${mapped.selector}`);
       notFound.push(target);
       continue;
     }
     console.log(`[fill] OK ${target}: "${value}" → ${mapped.selector}`);
+
+    // Small inter-field pause so the session interaction timeline looks human.
+    if (humanLike) {
+      await page.waitForTimeout(120 + Math.floor(Math.random() * 180)).catch(() => {});
+    }
 
     applied[target] = value;
     fieldMappings[target] = result.selector;

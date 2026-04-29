@@ -1,0 +1,201 @@
+DSAIL Project Report — JobPal Pro
+Submitted by: Luis Antillon
+Date: April 28, 2026
+
+================================================================================
+QUESTION 1: DESCRIBE WHAT YOU BUILT (max 800 words)
+================================================================================
+
+JobPal Pro is an AI-powered job application automation platform built to reduce
+the per-application time cost for active job seekers. The core workflow: a user
+pastes a job URL, the system generates a tailored cover letter via Google Gemini,
+a headed Playwright browser navigates to the application form and fills every
+field it can map with confidence, and the user reviews the result in a live
+browser view before clicking Submit themselves. The automation handles the
+repetitive data entry. The user retains control over what actually gets submitted.
+
+That division of responsibility was the most deliberate product decision.
+Fully autonomous submission was technically achievable, but I chose not to
+implement it to avoid fill errors (wrong resume attached, incorrect work
+authorization status) which could disqualify a candidate before any human reviewer saw
+their application. Requiring the user to click Submit is not a limitation of the
+MVP but rather the appropriate risk boundary for a tool operating in a high-stakes
+context and a way to establish protections from any legal liability.
+
+The technical core of the automation is a field scoring engine rather than
+hardcoded selectors. ATS platforms are inconsistent in how they identify form
+fields: Greenhouse uses POST parameter names as element IDs, Ashby uses UUIDs.
+A hardcoded-selector approach would require per-platform maintenance on every
+front-end update. Instead, the engine extracts all inputs, selects, and textareas
+from the DOM and scores each against regex pattern dictionaries for every target
+field type — first name, email, resume upload, work authorization, and others.
+The unambiguous top scorer is filled; anything below the confidence threshold is
+skipped. Skipping is the correct fallback: an incorrect value in a work
+authorization field carries materially more risk than a blank optional field.
+
+The platform also includes a Resume Wizard: the user can manage an infinitely-long
+resume edit inline, with as many roles and as many sub-bullets for each role as
+desired. The platform then uses Gemini to generate a one-page resume uniquely
+tailored to the provided job posting based on the parsed job application data, as
+well as a unique cover letter based on the same information. These documents ultimately
+get uploaded to the job application by the Playwright automation. The AI layer runs
+on gemini-2.5-flash. The user can also export general copies of their resume as 
+needed, with specific roles and role details included per the user's discretion.
+
+As of this submission, the workflow can run a full automated application process with
+no errors for all jobs posted on Greenhouse.io, one of the major ATS platforms with
+over 7,500 companies hosting job postings through this channel. More work remains
+to expand coverage to other ATS platforms with more rigorous spam detection protocols.
+
+Claude served as the primary engineering resource throughout the build, in the
+role of a senior technical collaborator. When the original PDF parsing pipeline
+— base64-encoded PDFs sent to a Supabase Edge Function for Gemini to interpret —
+produced repeated JSON parse failures, Claude identified the architectural
+failure and proposed migrating to client-side text extraction with pdfjs-dist.
+The replacement approach is faster, cheaper, and more reliable. When Ashby began
+flagging automation sessions as spam, Claude conducted a full analysis of the
+detection stack: Playwright's bundled Chromium carries a JA3/JA4 TLS fingerprint
+that does not match any retail Chrome release and is identifiable at the TCP
+handshake level before any JavaScript executes; Railway's datacenter IP is
+classified as high-risk by Socure, Ashby's fraud detection partner; and
+Playwright's programmatic fill() method omits the per-character keystroke events
+that behavioral analytics platforms use as a human-interaction signal. Fixes for
+each layer have been implemented or are in active deployment.
+
+Several components did not perform as expected. Ashby automation remains
+unreliable; the network-layer detection problems are not addressable through
+client-side patches alone and require infrastructure changes (retail Chrome
+binary, residential proxy) that are staged for deployment. The Resume Wizard PDF export required six-plus
+iterations to match target formatting, primarily because browser print dialogs
+inject headers and footers into the page margin area — suppressing them required
+both CSS @page rule overrides and body padding adjustments.
+
+The infrastructure stack is Vercel (frontend), Supabase (Postgres, Auth, Edge
+Functions, Storage), and Railway (Playwright automation server running Xvfb,
+x11vnc, websockify, and noVNC inside a Docker container). The team originally
+used Steel.dev for the live browser handoff and replaced it with the self-hosted
+noVNC stack to eliminate third-party dependency and per-session cost.
+
+Outstanding items at MVP: Ashby detection resolution pending infrastructure
+deployment, Workday automation undertested, single-session concurrency on the
+current Railway instance, and no payment system implemented.
+
+
+================================================================================
+QUESTION 2: SCALING THE PROTOTYPE (max 800 words)
+================================================================================
+
+Scaling JobPal Pro requires changes at the infrastructure, operational, and
+product layers, and the difficulty is not uniform across them. Some constraints
+are standard engineering problems with known solutions while others are structurally
+harder.
+
+The concurrency constraint is the most immediate. The current server runs one
+headed browser session at a time on a single Railway instance. At meaningful user
+volume, that architecture requires replacement with a job queue (BullMQ or
+equivalent) feeding a pool of stateless worker containers, each managing one
+Playwright session. The noVNC live-review connection adds routing complexity:
+each session needs a dedicated WebSocket endpoint, and the frontend must be
+directed to the correct worker. Railway supports horizontal scaling; the work is
+in the orchestration layer. This is a well-understood infrastructure problem and
+not a blocker to scale given sufficient engineering investment.
+
+Bot detection is a different category of problem. It does not scale linearly —
+it escalates. Greenhouse automation is currently reliable, which reflects the
+state of Greenhouse's detection logic today, not a permanent property of the
+system. At larger scale, each supported ATS platform becomes an independent
+reliability target, and ATS vendors update their detection continuously.
+Sustainable automation at volume requires a residential proxy network with
+per-user IP assignment to prevent shared-IP blacklisting, platform-level
+monitoring for detection regressions, and dedicated operational capacity to
+maintain evasion against evolving countermeasures. The legal surface area scales
+proportionally: most ATS platforms prohibit automated submissions in their terms
+of service, and a larger user base increases enforcement exposure. This is the
+one scaling dimension without a clean engineering resolution. The long-term path
+is either accepting it as a permanent operational cost or pursuing partnerships
+with ATS vendors — which would change the product's positioning and business
+model significantly.
+
+AI cost scales more predictably. Cover letter generation is one Gemini API call
+per application; at fifty applications per active user, per-user cost remains
+modest. The compounding effect occurs at the platform level when many users apply
+to overlapping job postings. Parsing the same job description repeatedly is
+avoidable waste; job description deduplication and prompt caching reduce this
+materially. Neither is implemented in the MVP.
+
+Field mapping presents a less obvious maintenance burden. The scoring engine
+reflects how ATS platforms structure their forms as of the build date. When a
+platform updates its front-end, mappings can silently break — no error is raised,
+a field simply goes unfilled. At scale, this requires automated canary
+applications against test job postings, fill-success rate monitoring segmented
+by platform, and a streamlined path to push pattern dictionary updates. This is
+an operational function, not a one-time engineering deliverable, and should be
+resourced accordingly.
+
+The data advantage becomes available only at scale. The current prototype
+generates no usable signal on outcomes. At volume, the platform accumulates
+data on which cover letter approaches correlate with interview callbacks, which
+profiles are competitive for which job types, and where field mapping fails at
+elevated rates. That data makes personalization meaningful rather than generic
+and creates a compounding quality advantage that a single-user prototype cannot
+demonstrate.
+
+The most viable initial traction path is the MBA and recent-graduate cohort:
+high application volume, high motivation to reduce per-application time, and
+strong peer referral dynamics within job-search cohorts. Sustaining that traction
+depends on reliability. The primary churn risk is not a degraded user experience but rather
+an automation error the user does not catch before submitting. The human-
+in-the-loop review step is the safeguard, but its effectiveness depends on
+whether users engage with it deliberately. At scale, the product interface must
+make substantive review the path of least resistance: clear display of what was
+filled and with what values, explicit flagging of low-confidence fields, and
+sufficient friction before submission to prevent reflexive approval.
+
+For now, I'm more than pleased to share this tool with my sectionmates in the
+hope that it improves their job prospects come full-time recruiting.
+
+
+================================================================================
+QUESTION 3: EARNED INSIGHTS (max 400 words)
+================================================================================
+
+The initial assumption was that field detection would be the primary technical
+challenge (mapping unlabeled or inconsistently labeled form inputs to the correct
+data point across different ATS platforms). That problem is tractable. A scoring
+engine with well-structured pattern dictionaries handles it with sufficient
+reliability for production use. The harder problem, which only became clear
+through implementation, is the fill/skip decision boundary.
+
+The cost asymmetry across field types is non-obvious until you have to encode it
+as a threshold. An incorrect value in a "how did you hear about us" field has no
+material consequence. An incorrect work authorization response can result in
+automatic disqualification before a human reviewer sees the application. Both
+present as the same engineering problem — a field requiring a value — but they
+require different risk tolerances. A single platform-wide confidence threshold
+either over-fills high-stakes fields or under-fills low-stakes ones. The
+threshold needs to be field-type-aware, and determining which field types are
+high-stakes requires domain knowledge that varies by jurisdiction, role, and
+employer. The MVP applies a uniform threshold. That is the most significant
+remaining product risk.
+
+The second insight concerns what successful execution looks like in an adversarial environment.
+Greenhouse automation is reliable. The working assumption was that reliable
+automation meant the problem was solved. More precisely, it means Greenhouse
+has not yet updated its detection logic to classify what the system does as
+automated. When running against Ashby's tighter detection protocols, nothing in the codebase had
+changed — the external environment shifted. And this risk remains for Greenhouse, where 
+a component that is currently functional is functional until the counterparty
+adapts. This is a fundamentally different maintenance model than standard 
+software: the system degrades through external response in addition to internal entropy.
+Keeping the platform operational is an active competition with detection systems 
+that are also being actively developed.
+
+The operational insight with the broadest applicability: the bug that consumed
+the most debugging time — several days of misdirected investigation into Gemini
+timeouts and JSON parsing failures — was caused by a missing deployment flag on
+a Supabase Edge Function (--no-verify-jwt). The function was returning HTTP 401
+before executing. That response manifested three abstraction layers up as a
+parsing error. No amount of reasoning from the application-level error message
+would have identified the root cause. The only effective diagnostic was
+inspecting the raw HTTP response directly. In distributed systems, the failure
+surface and the failure origin are rarely in the same place.

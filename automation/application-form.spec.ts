@@ -74,15 +74,55 @@ test.describe("Application form automation", () => {
       // ── Stealth: patch navigator properties that reCAPTCHA v3 uses to detect bots ──
       // These run in the page context before any page scripts execute.
       await activePage.addInitScript(() => {
-        // Remove the webdriver flag — single biggest automation signal
+        // ── Delete Playwright-injected globals before page scripts run ───────────
+        // These properties are written into the page JS context by Playwright and
+        // are trivially detectable by fingerprinting scripts (a simple
+        // `'__pwInitScripts' in window` check is enough to identify Playwright).
+        // Deleting them here is safe — Playwright reads them back via the CDP wire
+        // protocol, not via page JS evaluation.
+        try { delete (window as any).__pwInitScripts; } catch { /* ignore */ }
+        try { delete (window as any).__playwright__binding__; } catch { /* ignore */ }
+        try { delete (window as any).__pw_manual; } catch { /* ignore */ }
+
+        // ── Remove the webdriver flag ────────────────────────────────────────────
         Object.defineProperty(navigator, "webdriver", { get: () => false, configurable: true });
 
-        // Add a minimal chrome object that real Chrome has
-        if (!(window as any).chrome) {
-          (window as any).chrome = { runtime: {} };
-        }
+        // ── Expand window.chrome to match real Chrome's object structure ─────────
+        // The minimal `{ runtime: {} }` mock is detectable because real Chrome also
+        // exposes loadTimes(), csi(), and app.  Fingerprinting scripts call these
+        // and check that they return the expected types / properties.
+        Object.defineProperty(window, "chrome", {
+          value: {
+            runtime: { id: undefined },
+            loadTimes: () => ({
+              requestTime: performance.now() / 1000,
+              startLoadTime: performance.now() / 1000 - 0.1,
+              commitLoadTime: performance.now() / 1000 - 0.05,
+              finishDocumentLoadTime: performance.now() / 1000,
+              finishLoadTime: performance.now() / 1000,
+              firstPaintTime: 0,
+              firstPaintAfterLoadTime: 0,
+              navigationType: "Other",
+              wasFetchedViaSpdy: false,
+              wasNpnNegotiated: true,
+              npnNegotiatedProtocol: "h2",
+              wasAlternateProtocolAvailable: false,
+              connectionInfo: "h2",
+            }),
+            csi: () => ({
+              startE: (performance as any).timing?.navigationStart ?? Date.now(),
+              onloadT: (performance as any).timing?.loadEventEnd ?? Date.now(),
+              pageT: performance.now(),
+              tran: 15,
+            }),
+            app: { isInstalled: false },
+          },
+          configurable: true,
+          writable: false,
+        });
 
-        // Fix navigator.plugins — headless Chrome has 0 plugins; real Chrome has several
+        // ── Fix navigator.plugins ────────────────────────────────────────────────
+        // Headless Chrome has 0 plugins; real Chrome has several.
         Object.defineProperty(navigator, "plugins", {
           get: () => {
             const arr = [
@@ -96,13 +136,13 @@ test.describe("Application form automation", () => {
           configurable: true,
         });
 
-        // Fix navigator.languages
+        // ── Fix navigator.languages ──────────────────────────────────────────────
         Object.defineProperty(navigator, "languages", {
           get: () => ["en-US", "en"],
           configurable: true,
         });
 
-        // Prevent permissions.query from leaking automation
+        // ── Prevent permissions.query from leaking automation ────────────────────
         const originalQuery = window.navigator.permissions.query.bind(window.navigator.permissions);
         window.navigator.permissions.query = (parameters: PermissionDescriptor) =>
           parameters.name === "notifications"
