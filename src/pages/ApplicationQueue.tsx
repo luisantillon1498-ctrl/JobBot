@@ -470,11 +470,18 @@ export default function ApplicationQueue() {
 
   const handleRequeue = async (applicationId: string) => {
     if (!user) return;
-    await supabase
+    // Use "queued" (an explicit, DB-valid enum value) rather than null.
+    // The DB column has a CHECK constraint on the allowed values; passing null
+    // causes a silent PostgREST error that leaves the app stuck in "failed".
+    const { error } = await supabase
       .from("applications")
-      .update({ automation_queue_state: null, automation_live_url: null, automation_last_error: null })
+      .update({ automation_queue_state: "queued", automation_live_url: null, automation_last_error: null })
       .eq("id", applicationId)
       .eq("user_id", user.id);
+    if (error) {
+      toast.error(`Could not re-queue application: ${error.message}`);
+      return;
+    }
     toast.success("Application re-queued — it will appear in JobBot's queue");
     await loadQueue({ silent: true });
   };
