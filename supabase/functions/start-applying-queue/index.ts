@@ -423,6 +423,24 @@ serve(async (req) => {
           .neq("submission_status", "submitted");
       }
 
+      // Fall back to the most recently linked/generated resume for this application
+      // (generate-resume stores the PDF in application_documents but does not set
+      //  submitted_resume_document_id, so we need a separate lookup here).
+      if (!resumeDocumentId) {
+        const linkedResume = await serviceClient
+          .from("application_documents")
+          .select("document_id, documents!inner(id, type)")
+          .eq("application_id", appId)
+          .eq("user_id", user.id)
+          .eq("documents.type", "resume")
+          .limit(1)
+          .maybeSingle();
+        if (linkedResume.data?.document_id) {
+          resumeDocumentId = linkedResume.data.document_id;
+          console.log(`[EF] app ${appId} — found linked resume via application_documents: ${resumeDocumentId}`);
+        }
+      }
+
       if (!coverDocumentId) {
         const existingLinkedCover = await serviceClient
           .from("application_documents")

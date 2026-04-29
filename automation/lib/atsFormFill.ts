@@ -28,6 +28,7 @@ type FillAttemptResult = { matched: false } | { matched: true; selector: string;
 export type SupportedFieldKey =
   | "full_name"
   | "first_name"
+  | "preferred_name"
   | "last_name"
   | "email"
   | "phone"
@@ -97,6 +98,7 @@ export type FieldMappingPlan = {
 const ORDERED_TARGETS: SupportedFieldKey[] = [
   "full_name",
   "first_name",
+  "preferred_name",
   "last_name",
   "email",
   "phone",
@@ -120,7 +122,11 @@ const BASE_FIELD_PATTERNS: Record<SupportedFieldKey, RegExp[]> = {
   ],
   first_name: [
     /\blegal first name\b/i, /\bfirst name\b/i, /\bgiven name\b/i,
-    /\bforename\b/i, /\bpreferred name\b/i, /\bfirst\b/i,
+    /\bforename\b/i, /\bfirst\b/i,
+  ],
+  preferred_name: [
+    /\bpreferred first name\b/i, /\bpreferred name\b/i, /\bpreferred\b/i,
+    /\bnickname\b/i, /\bgo by\b/i,
   ],
   last_name: [
     /\blast name\b/i, /\bfamily name\b/i, /\bsurname\b/i, /\blast\b/i,
@@ -192,6 +198,7 @@ const SITE_FIELD_PATTERN_EXTRA: Record<AtsPlanSite, Partial<Record<SupportedFiel
   // Greenhouse label text is straightforward; ID patterns handle scoring (see SITE_ID_BAG_EXTRA_SCORE).
   greenhouse: {
     first_name:       [/\bfirst name\b/i, /\blegal first\b/i],
+    preferred_name:   [/\bpreferred first name\b/i, /\bpreferred name\b/i, /\bpreferred\b/i],
     last_name:        [/\blast name\b/i, /\blegal last\b/i],
     email:            [/\bemail\b/i],
     phone:            [/\bphone\b/i],
@@ -248,6 +255,7 @@ const SITE_ID_BAG_EXTRA_SCORE: Partial<
   // Greenhouse IDs are the POST param names — exact matches give a big score boost.
   greenhouse: {
     first_name:        [/^first_name$/i, /^first\.?name$/i],
+    preferred_name:    [/^preferred_name$/i, /^preferred_first_name$/i, /preferred.*name/i],
     last_name:         [/^last_name$/i,  /^last\.?name$/i],
     email:             [/^email$/i],
     phone:             [/\bphone\b/i],
@@ -293,7 +301,7 @@ const SITE_ID_BAG_EXTRA_SCORE: Partial<
 
 const NEGATIVE_PATTERNS: Partial<Record<SupportedFieldKey, RegExp[]>> = {
   full_name: [/\bfirst\b/i, /\blast\b/i, /\bfamily\b/i, /\bgiven\b/i, /\bpreferred\b/i],
-  first_name: [/\blast name\b/i, /\bsurname\b/i],
+  first_name: [/\blast name\b/i, /\bsurname\b/i, /\bpreferred\b/i],
   last_name: [/\bfirst name\b/i, /\bgiven name\b/i, /\bpreferred name\b/i],
   phone: [/\bfax\b/i],
   resume_path: [/\bcover letter\b/i],
@@ -474,6 +482,10 @@ const HUMAN_READABLE: Partial<Record<string, string>> = {
 function payloadValueForTarget(payload: ApplicantPayload, target: SupportedFieldKey): string | undefined {
   if (target === "full_name") {
     return [payload.first_name, payload.last_name].filter(Boolean).join(" ") || payload.full_name;
+  }
+  // Preferred name falls back to first name when no explicit preferred name is set
+  if (target === "preferred_name") {
+    return payload.preferred_name || payload.first_name;
   }
   const raw = payload[target];
   if (!raw) return raw;
