@@ -55,6 +55,8 @@ const activeSessions = new Map();
  * activeSessions.set() is called (which only happens when Playwright actually pauses).
  */
 const pendingRuns = new Set();
+// Map of currently running Playwright procs (includes pre-pause phase).
+const runningProcs = new Map();
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -431,10 +433,15 @@ async function runAutomation(payload) {
     JOBPAL_PAUSED_FILE: pausedFile,
     JOBPAL_HUMAN_ACTION_DONE_FILE: doneFile,
     DISPLAY: ":99",
+    // Force Playwright to use its bundled Chromium in the runner process.
+    // The container also installs google-chrome-stable, but recent runs show
+    // that binary intermittently segfaulting (Target crashed / SIGSEGV).
+    CHROME_EXECUTABLE_PATH: "",
   };
 
   console.log(`[runner] Starting Playwright for app ${appId}`);
   const proc = spawnPlaywright(env);
+  runningProcs.set(appId, proc);
   const exitPromise = trackProc(proc);
 
   // Race: Playwright exits normally OR writes the paused-file (CAPTCHA handoff)
@@ -490,6 +497,7 @@ async function runAutomation(payload) {
 
   if (winner === "timeout") {
     proc.kill("SIGTERM");
+    runningProcs.delete(appId);
     for (const f of cleanupPaths) await fs.rm(f, { force: true }).catch(() => {});
     return {
       httpStatus: 504,
@@ -499,6 +507,7 @@ async function runAutomation(payload) {
 
   // Playwright exited on its own
   const procResult = await exitPromise;
+  runningProcs.delete(appId);
   for (const f of cleanupPaths) await fs.rm(f, { force: true }).catch(() => {});
 
   const result = await readArtifacts(outputDir, runId, procResult);
@@ -896,15 +905,23 @@ const server = createServer(async (req, res) => {
       if (appId) {
         // Kill specific session
         const session = activeSessions.get(appId);
-        if (!session) {
-          return sendJson(res, 200, { ok: true, killed: false, message: `No active session for ${appId}` });
+        const pendingProc = runningProcs.get(appId);
+        let killed = false;
+        if (session) {
+          try { session.proc.kill("SIGTERM"); } catch {}
+          activeSessions.delete(appId);
+          for (const f of session.cleanupPaths) fs.rm(f, { force: true }).catch(() => {});
+          fs.rm(session.tempDir, { recursive: true, force: true }).catch(() => {});
+          killed = true;
         }
-        try { session.proc.kill("SIGTERM"); } catch {}
-        activeSessions.delete(appId);
-        for (const f of session.cleanupPaths) fs.rm(f, { force: true }).catch(() => {});
-        fs.rm(session.tempDir, { recursive: true, force: true }).catch(() => {});
-        console.log(`[kill-session] Killed session for ${appId}`);
-        return sendJson(res, 200, { ok: true, killed: true, message: `Session for ${appId} terminated` });
+        if (pendingProc) {
+          try { pendingProc.kill("SIGTERM"); } catch {}
+          runningProcs.delete(appId);
+          killed = true;
+        }
+        pendingRuns.delete(appId);
+        console.log(`[kill-session] ${killed ? "Killed" : "No-op"} session for ${appId}`);
+        return sendJson(res, 200, { ok: true, killed, message: killed ? `Session for ${appId} terminated` : `No active session for ${appId}` });
       } else {
         // Kill all sessions
         const ids = [...activeSessions.keys()];
@@ -917,8 +934,13 @@ const server = createServer(async (req, res) => {
             fs.rm(session.tempDir, { recursive: true, force: true }).catch(() => {});
           }
         }
+        for (const [id, proc] of runningProcs.entries()) {
+          try { proc.kill("SIGTERM"); } catch {}
+          runningProcs.delete(id);
+        }
+        pendingRuns.clear();
         console.log(`[kill-session] Killed ${ids.length} session(s): ${ids.join(", ") || "(none)"}`);
-        return sendJson(res, 200, { ok: true, killed: ids.length > 0, message: `Terminated ${ids.length} session(s)` });
+        return sendJson(res, 200, { ok: true, killed: ids.length > 0, message: `Terminated ${ids.length} paused session(s)` });
       }
     } catch (error) {
       return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : "Kill session failed" });
@@ -941,7 +963,8 @@ const server = createServer(async (req, res) => {
         await page.setContent(body.html, { waitUntil: "networkidle" });
         const pdfBuffer = await page.pdf({
           format: "Letter",
-          margin: { top: "0.75in", right: "1in", bottom: "0.75in", left: "1in" },
+          margin: { top: "0in", right: "0in", bottom: "0in", left: "0in" },
+          preferCSSPageSize: true,
           printBackground: true,
         });
         res.writeHead(200, { "Content-Type": "application/pdf", "Content-Length": pdfBuffer.length });

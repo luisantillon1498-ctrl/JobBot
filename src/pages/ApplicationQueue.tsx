@@ -11,7 +11,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
-import { startApplyingQueue, startApplyingQueueSequential } from "@/lib/startApplyingQueue";
+import { startApplyingQueue } from "@/lib/startApplyingQueue";
 import { killRunnerSession } from "@/lib/runnerSession";
 
 type QueueApplication = {
@@ -325,12 +325,9 @@ export default function ApplicationQueue() {
         const saved = await saveQueue();
         if (!saved) return;
       }
-      const result = await startApplyingQueueSequential(applicationIds, { resume: false }, (id) => {
-        setRunningApplicationId(id);
-        if (id) {
-          setJobBotRows((prev) => prev.map((r) => (r.id === id ? { ...r, automation_queue_state: "autofilling" } : r)));
-        }
-      });
+      // Server-side orchestration so queue processing survives page navigation/unmount.
+      setRunningApplicationId(applicationIds[0] ?? null);
+      const result = await startApplyingQueue({ applicationIds, resume: false });
       const waiting = result.outcomes.filter((o) => o.state === "waiting_for_review").length;
       const handoff = result.outcomes.filter((o) => o.state === "waiting_for_human_action").length;
       const failed = result.outcomes.filter((o) => o.state === "failed").length;
@@ -366,13 +363,9 @@ export default function ApplicationQueue() {
     }
     setStarting(true);
     try {
-      const result = await startApplyingQueueSequential(applicationIds, { resume: true }, (id) => {
-        setRunningApplicationId(id);
-        if (id) {
-          setJobBotRows((prev) => prev.map((r) => (r.id === id ? { ...r, automation_queue_state: "autofilling" } : r)));
-          setUserRows((prev) => prev.map((r) => (r.id === id ? { ...r, automation_queue_state: "autofilling" } : r)));
-        }
-      });
+      // Server-side orchestration so resume flow survives page navigation/unmount.
+      setRunningApplicationId(applicationIds[0] ?? null);
+      const result = await startApplyingQueue({ applicationIds, resume: true });
       const waiting = result.outcomes.filter((o) => o.state === "waiting_for_review").length;
       const handoff = result.outcomes.filter((o) => o.state === "waiting_for_human_action").length;
       const failed = result.outcomes.filter((o) => o.state === "failed").length;
@@ -419,15 +412,15 @@ export default function ApplicationQueue() {
     try {
       const result = await killRunnerSession(); // no applicationId = kill all
       if (result.killed) {
-        // Reset all waiting_for_human_action apps to failed so the DB matches reality
+        // Re-queue all waiting apps so users can restart immediately.
         const waitingIds = humanActionRows.map((r) => r.id);
         if (waitingIds.length > 0) {
           await supabase
             .from("applications")
             .update({
-              automation_queue_state: "failed",
+              automation_queue_state: "queued",
               automation_live_url: null,
-              automation_last_error: "Session freed by user",
+              automation_last_error: null,
             })
             .in("id", waitingIds)
             .eq("user_id", user.id);
@@ -453,13 +446,13 @@ export default function ApplicationQueue() {
       await supabase
         .from("applications")
         .update({
-          automation_queue_state: "failed",
+          automation_queue_state: "queued",
           automation_live_url: null,
-          automation_last_error: "Session ended by user",
+          automation_last_error: null,
         })
         .eq("id", applicationId)
         .eq("user_id", user.id);
-      toast.success("Session ended — runner is now free to start another application");
+      toast.success("Session ended — application re-queued and runner is free");
       await loadQueue({ silent: true });
     } catch {
       toast.error("Could not end session — the runner may already be free");
