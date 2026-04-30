@@ -10,14 +10,8 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
 import {
-  extractJobFromUrl,
-  mergeExtractedJobFields,
   parseJobUrlsFromText,
-  shouldAutoGenerateCoverLetter,
-  type ExtractedJobFields,
 } from "@/lib/jobExtraction";
-import { invokeGenerateCoverLetter } from "@/lib/coverLetterGenerate";
-import { getOrGenerateApplicationResumePath } from "@/lib/resumeForGeneration";
 import { killRunnerSession } from "@/lib/runnerSession";
 import {
   AlertDialog,
@@ -91,6 +85,7 @@ interface Application {
   updated_at: string;
   applied_at: string | null;
   location: string | null;
+  submitted_resume_document_id: string | null;
   submitted_cover_document_id: string | null;
   automation_queue_state: string | null;
 }
@@ -256,14 +251,6 @@ function FilterableSortableColumnHead({
   );
 }
 
-const emptyJobFields = (): ExtractedJobFields => ({
-  company_name: "",
-  job_title: "",
-  job_description: "",
-  location: "",
-  salary_range: "",
-});
-
 async function loadApplicationsAndSparkle(userId: string): Promise<{
   list: Application[];
   sparkle: Record<string, CoverSparkle>;
@@ -271,7 +258,7 @@ async function loadApplicationsAndSparkle(userId: string): Promise<{
   const { data: apps, error: appsError } = await supabase
     .from("applications")
     .select(
-      "id, company_name, job_title, submission_status, application_status, outcome, updated_at, applied_at, location, submitted_cover_document_id, automation_queue_state",
+      "id, company_name, job_title, submission_status, application_status, outcome, updated_at, applied_at, location, submitted_resume_document_id, submitted_cover_document_id, automation_queue_state",
     )
     .eq("user_id", userId)
     .order("updated_at", { ascending: false });
@@ -379,84 +366,38 @@ export default function Dashboard() {
       return;
     }
     setBatchRunning(true);
-    let created = 0;
-    let failed = 0;
-    let coversOk = 0;
-    let coversSkipped = 0;
-    let coverGenFailed = 0;
     try {
-      for (let i = 0; i < urls.length; i++) {
-        const url = urls[i];
-        setBatchQueueMeta({ total: urls.length, remaining: urls.length - i });
-        try {
-          const scrape = await extractJobFromUrl(supabase, url);
-          const fields = mergeExtractedJobFields(emptyJobFields(), scrape.fields);
-          const { data, error } = await supabase
-            .from("applications")
-            .insert({
-              user_id: user.id,
-              submission_status: "draft",
-              application_status: "not_started",
-              job_url: url,
-              company_name: fields.company_name.trim(),
-              job_title: fields.job_title.trim(),
-              job_description: fields.job_description.trim() || null,
-              location: fields.location.trim() || null,
-              salary_range: fields.salary_range.trim() || null,
-              notes: null,
-            })
-            .select("id")
-            .single();
-          if (error || !data) {
-            failed++;
-            toast.error(error?.message ?? "Could not save an application for one URL in the batch.");
-            setBatchQueueMeta({ total: urls.length, remaining: urls.length - i - 1 });
-            continue;
-          }
-          created++;
-          await supabase.from("application_events").insert({
-            application_id: data.id,
-            user_id: user.id,
-            event_type: "status_change",
-            description: scrape.usedFallback
-              ? "Application created from batch import as draft (listing data was limited)"
-              : "Application created from batch import as draft",
-          });
-          if (shouldAutoGenerateCoverLetter(scrape, fields)) {
-            try {
-              // Generate (or reuse) the tailored resume for this application first,
-              // then use its path when generating the cover letter.
-              const resumePath = await getOrGenerateApplicationResumePath(supabase, data.id);
-              await invokeGenerateCoverLetter({
-                application_id: data.id,
-                job_title: fields.job_title,
-                company_name: fields.company_name,
-                job_description: fields.job_description,
-                resume_path: resumePath,
-              });
-              coversOk++;
-            } catch (clErr) {
-              console.error(clErr);
-              coverGenFailed++;
-            }
-          } else {
-            coversSkipped++;
-          }
-        } catch (e) {
-          failed++;
-          console.error(e);
-          toast.error(e instanceof Error ? e.message : "Batch item failed.");
-        }
-        setBatchQueueMeta({ total: urls.length, remaining: urls.length - i - 1 });
+      setBatchQueueMeta({ total: urls.length, remaining: 0 });
+      const { data, error } = await supabase.functions.invoke("batch-import-applications", {
+        body: { urls },
+      });
+      if (error) throw error;
+      const summary = (data ?? {}) as {
+        ok?: boolean;
+        accepted?: boolean;
+        created?: number;
+        failed?: number;
+        covers_generated?: number;
+        covers_skipped?: number;
+        cover_generation_failed?: number;
+        error?: string;
+      };
+      if (!summary.ok) throw new Error(summary.error ?? "Batch import failed");
+      if (summary.accepted) {
+        toast.success("Batch import started. You can navigate away; processing continues in the background.");
+        return;
       }
+
       const parts = [
-        `${created} application${created === 1 ? "" : "s"} created`,
-        failed ? `${failed} failed` : null,
-        coversOk ? `${coversOk} cover letter${coversOk === 1 ? "" : "s"} generated` : null,
-        coversSkipped ? `${coversSkipped} without auto cover (thin or failed scrape)` : null,
-        coverGenFailed ? `${coverGenFailed} cover generation error${coverGenFailed === 1 ? "" : "s"}` : null,
+        `${summary.created ?? 0} application${summary.created === 1 ? "" : "s"} created`,
+        summary.failed ? `${summary.failed} failed` : null,
+        summary.covers_generated ? `${summary.covers_generated} cover letter${summary.covers_generated === 1 ? "" : "s"} generated` : null,
+        summary.covers_skipped ? `${summary.covers_skipped} without auto cover (thin or failed scrape)` : null,
+        summary.cover_generation_failed ? `${summary.cover_generation_failed} cover generation error${summary.cover_generation_failed === 1 ? "" : "s"}` : null,
       ].filter(Boolean);
       toast.success(parts.join(" · "));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Batch import failed");
     } finally {
       setBatchRunning(false);
       setBatchQueueMeta(null);
@@ -476,27 +417,81 @@ export default function Dashboard() {
     //    This frees the single-session lock so other apps can start.
     killRunnerSession(id).catch(() => {/* non-fatal — runner may already be free */});
 
-    // 1. Find all documents linked to this application
-    const { data: linkedDocs } = await supabase
+    // 1. Find all linked document ids first (embed-free for reliability)
+    const { data: linkedRows, error: linkedErr } = await supabase
       .from("application_documents")
-      .select("document_id, documents(id, file_path)")
+      .select("document_id")
       .eq("application_id", id);
+    if (linkedErr) {
+      setDeleting(false);
+      toast.error(linkedErr.message || "Could not load linked documents");
+      return;
+    }
+
+    const linkedIds = (linkedRows ?? [])
+      .map((row: { document_id: string | null }) => row.document_id)
+      .filter(Boolean) as string[];
+    const submittedIds = [
+      deleteTarget.submitted_resume_document_id,
+      deleteTarget.submitted_cover_document_id,
+    ].filter(Boolean) as string[];
+    const candidateIds = [...new Set([...linkedIds, ...submittedIds])];
+
+    const linkedDocs = candidateIds.length > 0
+      ? await supabase
+          .from("documents")
+          .select("id, file_path")
+          .in("id", candidateIds)
+          .eq("user_id", user!.id)
+      : { data: [], error: null };
+    if (linkedDocs.error) {
+      setDeleting(false);
+      toast.error(linkedDocs.error.message || "Could not load linked document rows");
+      return;
+    }
+
+    // 1b. Also sweep application-scoped generated docs that may be orphaned.
+    const appPrefixes = [`${user!.id}/resumes/${id}/`, `${user!.id}/covers/${id}/`];
+    const { data: appScopedDocs, error: scopedErr } = await supabase
+      .from("documents")
+      .select("id, file_path")
+      .eq("user_id", user!.id)
+      .or(appPrefixes.map((p) => `file_path.like.${p}%`).join(","));
+    if (scopedErr) {
+      setDeleting(false);
+      toast.error(scopedErr.message || "Could not load generated docs for this application");
+      return;
+    }
 
     // 2. Delete storage files for linked documents
-    if (linkedDocs && linkedDocs.length > 0) {
-      const filePaths = linkedDocs
-        .map((row: { documents: { file_path: string } | null }) => row.documents?.file_path)
+    const docsToDelete = [
+      ...((linkedDocs.data ?? []) as Array<{ id: string; file_path: string | null }>),
+      ...((appScopedDocs ?? []) as Array<{ id: string; file_path: string | null }>),
+    ];
+    const uniqueById = new Map(docsToDelete.map((d) => [d.id, d]));
+    const finalDocs = [...uniqueById.values()];
+    if (finalDocs.length > 0) {
+      const filePaths = finalDocs
+        .map((row) => row.file_path)
         .filter(Boolean) as string[];
       if (filePaths.length > 0) {
-        await supabase.storage.from("documents").remove(filePaths);
+        const { error: storageErr } = await supabase.storage.from("documents").remove(filePaths);
+        if (storageErr) {
+          setDeleting(false);
+          toast.error(storageErr.message || "Could not remove document files from storage");
+          return;
+        }
       }
 
       // 3. Delete the document rows (application_documents rows cascade automatically)
-      const docIds = linkedDocs
-        .map((row: { document_id: string }) => row.document_id)
-        .filter(Boolean) as string[];
+      const docIds = finalDocs.map((row) => row.id).filter(Boolean) as string[];
       if (docIds.length > 0) {
-        await supabase.from("documents").delete().in("id", docIds);
+        const { error: docsErr } = await supabase.from("documents").delete().in("id", docIds);
+        if (docsErr) {
+          setDeleting(false);
+          toast.error(docsErr.message || "Could not remove document rows");
+          return;
+        }
       }
     }
 

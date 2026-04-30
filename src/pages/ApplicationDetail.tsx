@@ -405,6 +405,75 @@ export default function ApplicationDetail() {
         // Best-effort: kill any active VNC/Playwright session before deleting
         // so the runner doesn't stay locked on a deleted application.
         try { await killRunnerSession(id!); } catch { /* non-fatal */ }
+
+        // Load linked document ids first (without relying on embeds), then fetch
+        // document rows separately for reliable deletion across schema states.
+        const { data: linkedRows, error: linkedErr } = await supabase
+          .from("application_documents")
+          .select("document_id")
+          .eq("application_id", id);
+        if (linkedErr) {
+          toast.error(linkedErr.message || "Could not load documents linked to this application");
+          return;
+        }
+
+        const linkedIds = (linkedRows ?? [])
+          .map((row: { document_id: string | null }) => row.document_id)
+          .filter(Boolean) as string[];
+        const submittedIds = [app.submitted_resume_document_id, app.submitted_cover_document_id].filter(Boolean) as string[];
+        const candidateIds = [...new Set([...linkedIds, ...submittedIds])];
+
+        const linkedDocs = candidateIds.length > 0
+          ? await supabase
+              .from("documents")
+              .select("id, file_path")
+              .in("id", candidateIds)
+              .eq("user_id", user.id)
+          : { data: [], error: null };
+        if (linkedDocs.error) {
+          toast.error(linkedDocs.error.message || "Could not load linked document records");
+          return;
+        }
+
+        // Catch orphaned generated docs that may not be linked due prior failures.
+        const appPrefixes = [`${user.id}/resumes/${id}/`, `${user.id}/covers/${id}/`];
+        const { data: appScopedDocs, error: scopedErr } = await supabase
+          .from("documents")
+          .select("id, file_path")
+          .eq("user_id", user.id)
+          .or(appPrefixes.map((p) => `file_path.like.${p}%`).join(","));
+        if (scopedErr) {
+          toast.error(scopedErr.message || "Could not load generated docs for this application");
+          return;
+        }
+
+        const docsToDelete = [
+          ...(linkedDocs.data ?? []),
+          ...(appScopedDocs ?? []),
+        ];
+        const uniqueById = new Map(docsToDelete.map((d) => [d.id, d]));
+        const docRows = [...uniqueById.values()];
+
+        if (docRows.length > 0) {
+          const filePaths = docRows.map((row) => row.file_path).filter(Boolean) as string[];
+          if (filePaths.length > 0) {
+            const { error: storageErr } = await supabase.storage.from("documents").remove(filePaths);
+            if (storageErr) {
+              toast.error(storageErr.message || "Could not remove linked document files");
+              return;
+            }
+          }
+
+          const docIds = docRows.map((row) => row.id);
+          if (docIds.length > 0) {
+            const { error: docsErr } = await supabase.from("documents").delete().in("id", docIds);
+            if (docsErr) {
+              toast.error(docsErr.message || "Could not remove linked document records");
+              return;
+            }
+          }
+        }
+
         const { error } = await supabase.from("applications").delete().eq("id", id);
         if (error) {
           toast.error(error.message || "Could not delete application");
@@ -531,10 +600,19 @@ export default function ApplicationDetail() {
     if (!user || !app) return;
     setGeneratingResume(true);
     try {
-      const { error } = await supabase.functions.invoke("generate-resume", {
+      const { data, error } = await supabase.functions.invoke("generate-resume", {
         body: { application_id: id },
       });
       if (error) throw new Error(error.message ?? "Failed to generate resume");
+      const result = data as { ok?: boolean; error?: string; code?: string } | null;
+      if (!result?.ok) {
+        if (result?.code === "no_resume_data") {
+          throw new Error(
+            "Resume data is missing for this account. Add experience/education/skills in Resume Wizard, then try again.",
+          );
+        }
+        throw new Error(result?.error ?? "Failed to generate resume");
+      }
       toast.success("Resume generated and saved to documents!");
       fetchData();
     } catch (err) {
@@ -648,7 +726,7 @@ export default function ApplicationDetail() {
               </AlertDialogTitle>
               <AlertDialogDescription>
                 {deleteDialog.kind === "application" &&
-                  "This removes the application, timeline, generated documents, and document links. Files in your Document Vault are not deleted."}
+                  "This removes the application, timeline, generated documents, and all documents tied to this application (including submitted resume/cover files) from your Document Vault and storage."}
                 {deleteDialog.kind === "artifact" && "This permanently removes the generated text. This cannot be undone."}
                 {deleteDialog.kind === "vaultDocument" &&
                   `"${deleteDialog.displayName}" will be removed from the vault and unlinked from all applications.`}
@@ -1155,7 +1233,7 @@ export default function ApplicationDetail() {
               <CardHeader><CardTitle className="text-destructive">Danger zone</CardTitle></CardHeader>
               <CardContent>
                 <p className="text-sm text-muted-foreground mb-3">
-                  Permanently delete this application and its timeline, links, and generated documents. Vault files stay in Document Vault unless you delete them there or from attached documents.
+                  Permanently delete this application and its timeline, links, generated documents, and all application-tied document files from your Document Vault.
                 </p>
                 <Button variant="destructive" size="sm" onClick={() => setDeleteDialog({ kind: "application" })}>
                   <Trash2 className="h-4 w-4 mr-2" />
