@@ -162,10 +162,12 @@ function DocumentSection({
         ) : null}
       </AlertDialog>
       <CardHeader>
-        <CardTitle className=”text-lg”>{section.label}</CardTitle>
-        {section.key === “resume” && (
-          <p className=”text-sm text-muted-foreground font-normal pt-1”>
-            Resumes are generated automatically from your Resume Wizard data, tailored to each job. Upload a resume here to attach it manually to a specific application instead.
+        <CardTitle className="text-lg">{section.label}</CardTitle>
+        {section.key === "resume" && (
+          <p className="text-sm text-muted-foreground font-normal pt-1">
+            Resumes are generated automatically from your Resume Wizard data and tailored per application.
+            There is no "default for AI" resume toggle in the current workflow. Upload a resume here only
+            when you want to attach one manually to a specific application.
           </p>
         )}
       </CardHeader>
