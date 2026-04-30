@@ -261,13 +261,16 @@ serve(async (req) => {
       const safeBase = sanitizeStorageFileName(
         `cover_${args.companyName}_${args.jobTitle}_${args.artifact.id.slice(0, 8)}.txt`,
       );
-      const filePath = `${user.id}/${Date.now()}_${safeBase}`;
+      const filePath = `${user.id}/covers/${args.applicationId}/${safeBase}`;
       const contentBlob = new Blob([args.artifact.content], { type: "text/plain;charset=utf-8" });
       const uploaded = await serviceClient.storage.from("documents").upload(filePath, contentBlob, {
         contentType: "text/plain;charset=utf-8",
-        upsert: false,
+        upsert: true,
       });
-      if (uploaded.error) return null;
+      if (uploaded.error) {
+        console.warn(`[EF] app ${args.applicationId} — ensureCoverFromArtifact upload failed: ${uploaded.error.message}`);
+        return null;
+      }
 
       const fileSize = contentBlob.size > PG_INT_MAX ? null : contentBlob.size;
       const inserted = await serviceClient
@@ -284,7 +287,16 @@ serve(async (req) => {
         .single();
 
       if (inserted.error || !inserted.data?.id) {
-        await serviceClient.storage.from("documents").remove([filePath]);
+        const retryExisting = await serviceClient
+          .from("documents")
+          .select("id")
+          .eq("user_id", user.id)
+          .eq("source_generated_artifact_id", args.artifact.id)
+          .maybeSingle();
+        if (retryExisting.data?.id) return retryExisting.data.id;
+        console.warn(
+          `[EF] app ${args.applicationId} — ensureCoverFromArtifact document insert failed: ${inserted.error?.message ?? "unknown"}`,
+        );
         return null;
       }
 
@@ -616,7 +628,7 @@ serve(async (req) => {
           .select("document_id, documents!inner(id, type)")
           .eq("application_id", appId)
           .eq("user_id", user.id)
-          .eq("documents.type", "cover_letter_template")
+          .in("documents.type", ["cover_letter_template", "cover_letter"])
           .limit(1)
           .maybeSingle();
         if (existingLinkedCover.data?.document_id) {
@@ -641,6 +653,29 @@ serve(async (req) => {
             jobTitle: app.job_title || "Role",
             artifact: { id: latestArtifact.data.id, content: latestArtifact.data.content },
           });
+          if (!coverDocumentId) {
+            console.warn(`[EF] app ${appId} — found cover artifact but failed to materialize/link a cover document`);
+          }
+        }
+      }
+
+      // Final fallback: most recent cover document in vault (legacy/manual uploads).
+      if (!coverDocumentId) {
+        const latestCoverDoc = await serviceClient
+          .from("documents")
+          .select("id, file_path")
+          .eq("user_id", user.id)
+          .in("type", ["cover_letter_template", "cover_letter"])
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (latestCoverDoc.data?.id && latestCoverDoc.data.file_path) {
+          coverDocumentId = latestCoverDoc.data.id;
+          await serviceClient.from("application_documents").insert({
+            application_id: appId,
+            document_id: coverDocumentId,
+            user_id: user.id,
+          }).then(() => {}).catch(() => {});
         }
       }
 
