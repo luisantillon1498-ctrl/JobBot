@@ -57,6 +57,10 @@ function pickRunnerError(res: RunnerResult, fallback: string): string {
   return fallback;
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function sanitizeStorageFileName(value: string): string {
   return value
     .trim()
@@ -443,9 +447,7 @@ serve(async (req) => {
       let resumeDocumentId = app.submitted_resume_document_id ?? null;
       let coverDocumentId = app.submitted_cover_document_id ?? null;
 
-      // Fall back to the most recently linked/generated resume for this application
-      // (generate-resume stores the PDF in application_documents but does not set
-      //  submitted_resume_document_id, so we need a separate lookup here).
+      // Fall back to the most recently linked/generated resume for this application.
       if (!resumeDocumentId) {
         const linkedResume = await serviceClient
           .from("application_documents")
@@ -458,6 +460,26 @@ serve(async (req) => {
         if (linkedResume.data?.document_id) {
           resumeDocumentId = linkedResume.data.document_id;
           console.log(`[EF] app ${appId} — found linked resume via application_documents: ${resumeDocumentId}`);
+        }
+      }
+
+      // If create-time background generation is still finishing, give it a short window
+      // before we trigger another generation request.
+      if (!resumeDocumentId) {
+        for (let attempt = 0; attempt < 4 && !resumeDocumentId; attempt++) {
+          await delay(2000);
+          const linkedResumeRetry = await serviceClient
+            .from("application_documents")
+            .select("document_id, documents!inner(id, type)")
+            .eq("application_id", appId)
+            .eq("user_id", user.id)
+            .eq("documents.type", "resume")
+            .limit(1)
+            .maybeSingle();
+          if (linkedResumeRetry.data?.document_id) {
+            resumeDocumentId = linkedResumeRetry.data.document_id;
+            console.log(`[EF] app ${appId} — picked up in-flight generated resume: ${resumeDocumentId}`);
+          }
         }
       }
 

@@ -48,6 +48,7 @@ interface ApplicationRow {
   company_name: string;
   job_title: string;
   job_description: string | null;
+  submitted_resume_document_id?: string | null;
 }
 
 interface SelectedExperience {
@@ -166,10 +167,10 @@ function applyResumePageLimitSelection(input: AIResponse, pageLimit: number): AI
   }
   return {
     ...input,
-    selected_experience: input.selected_experience.slice(0, 4).map((e) => ({ ...e, bullets: e.bullets.slice(0, 4) })),
-    selected_academics: input.selected_academics.slice(0, 2).map((a) => ({ ...a, bullets: a.bullets.slice(0, 2) })),
-    selected_extracurriculars: input.selected_extracurriculars.slice(0, 2).map((x) => ({ ...x, bullets: x.bullets.slice(0, 2) })),
-    selected_skills: input.selected_skills.slice(0, 4).map((s) => ({ ...s, bullets: s.bullets.slice(0, 6) })),
+    selected_experience: input.selected_experience.slice(0, 4).map((e) => ({ ...e, bullets: e.bullets.slice(0, 3) })),
+    selected_academics: input.selected_academics.slice(0, 2).map((a) => ({ ...a, bullets: a.bullets.slice(0, 1) })),
+    selected_extracurriculars: input.selected_extracurriculars.slice(0, 2).map((x) => ({ ...x, bullets: x.bullets.slice(0, 1) })),
+    selected_skills: input.selected_skills.slice(0, 4).map((s) => ({ ...s, bullets: s.bullets.slice(0, 5) })),
     personal_interests: (input.personal_interests ?? "").slice(0, 240),
   };
 }
@@ -806,7 +807,7 @@ serve(async (req) => {
     // --- Fetch application ---
     const { data: appRow, error: appErr } = await userClient
       .from("applications")
-      .select("id, user_id, company_name, job_title, job_description")
+      .select("id, user_id, company_name, job_title, job_description, submitted_resume_document_id")
       .eq("id", application_id)
       .single();
 
@@ -818,6 +819,26 @@ serve(async (req) => {
       });
     }
     const app = appRow as ApplicationRow;
+
+    // Idempotency guard: if this application already has a usable resume document, reuse it.
+    if (app.submitted_resume_document_id) {
+      const existingDoc = await userClient
+        .from("documents")
+        .select("id, file_path")
+        .eq("id", app.submitted_resume_document_id)
+        .eq("user_id", user.id)
+        .eq("type", "resume")
+        .maybeSingle();
+      if (existingDoc.data?.id && existingDoc.data.file_path) {
+        return jsonOk({
+          ok: true,
+          storage_path: existingDoc.data.file_path,
+          document_id: existingDoc.data.id,
+          generator_version: RESUME_GENERATOR_VERSION,
+          generation_mode: "existing_reuse",
+        });
+      }
+    }
 
     // --- Fetch profile ---
     const { data: profileRow } = await userClient
@@ -974,6 +995,7 @@ Instructions:
 - Select the most relevant experience entries (up to 4, ordered by relevance)
 - For each experience entry, you may keep, trim, or rewrite bullets to emphasize relevance to this specific role
 - Select all academics entries (keep them all)
+- Select relevant extracurricular/community entries when they strengthen this application
 - Select the most relevant skills categories (keep all, but reorder by relevance)
 - Include personal interests if present
 - Keep bullets concise (1-2 lines each)
