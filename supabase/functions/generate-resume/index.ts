@@ -1127,43 +1127,76 @@ Return this exact JSON structure:
       });
     }
 
-    // --- Insert document record ---
-    // The documents table schema: id, user_id, name, type, file_path, file_size, version
-    // (from migration 20260408153722). We use file_path for the storage path and type='resume'.
-    const docInsertPayload: Record<string, unknown> = {
-      user_id: user.id,
-      name: "Tailored Resume",
-      type: "resume",
-      file_path: storagePath,
-    };
-
-    const { data: docRow, error: docInsertErr } = await userClient
+    // --- Resolve/create document record (idempotent for this app path) ---
+    const existingDocForPath = await userClient
       .from("documents")
-      .insert(docInsertPayload)
       .select("id")
-      .single();
+      .eq("user_id", user.id)
+      .eq("type", "resume")
+      .eq("file_path", storagePath)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-    if (docInsertErr || !docRow) {
-      console.error("Document insert error:", docInsertErr);
-      // Storage upload succeeded but DB insert failed — still return partial success with storage path
-      return jsonOk({
-        ok: false,
-        error: `PDF uploaded but document record could not be saved: ${docInsertErr?.message ?? "Unknown error"}`,
-        code: "db_insert_failed",
-        storage_path: storagePath,
-      });
+    let documentId = existingDocForPath.data?.id ?? null;
+    if (!documentId) {
+      const docInsertPayload: Record<string, unknown> = {
+        user_id: user.id,
+        name: "Tailored Resume",
+        type: "resume",
+        file_path: storagePath,
+      };
+
+      const { data: docRow, error: docInsertErr } = await userClient
+        .from("documents")
+        .insert(docInsertPayload)
+        .select("id")
+        .single();
+
+      if (docInsertErr || !docRow) {
+        // Re-check in case a concurrent request inserted first.
+        const retryDoc = await userClient
+          .from("documents")
+          .select("id")
+          .eq("user_id", user.id)
+          .eq("type", "resume")
+          .eq("file_path", storagePath)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (!retryDoc.data?.id) {
+          console.error("Document insert error:", docInsertErr);
+          return jsonOk({
+            ok: false,
+            error: `PDF uploaded but document record could not be saved: ${docInsertErr?.message ?? "Unknown error"}`,
+            code: "db_insert_failed",
+            storage_path: storagePath,
+          });
+        }
+        documentId = retryDoc.data.id;
+      } else {
+        documentId = (docRow as { id: string }).id;
+      }
     }
 
-    const documentId = (docRow as { id: string }).id;
-
     // --- Link document to application via application_documents ---
-    const { error: junctionErr } = await userClient
+    const existingLink = await userClient
       .from("application_documents")
-      .insert({
-        application_id,
-        document_id: documentId,
-        user_id: user.id,
-      });
+      .select("id")
+      .eq("application_id", application_id)
+      .eq("document_id", documentId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    const { error: junctionErr } = existingLink.data?.id
+      ? { error: null }
+      : await userClient
+          .from("application_documents")
+          .insert({
+            application_id,
+            document_id: documentId,
+            user_id: user.id,
+          });
 
     if (junctionErr) {
       // Log but don't fail — the document exists, the link is cosmetic

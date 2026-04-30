@@ -98,6 +98,9 @@ async function fillGreenhouseCustomDropdowns(page: Page, payload: ApplicantPaylo
     const displayValue = GH_HUMAN_READABLE[value] ?? value;
 
     try {
+      // Close any previously-open dropdown before targeting the next field.
+      await page.keyboard.press("Escape").catch(() => {});
+
       // ── Find a label whose text matches this field ──────────────────────
       const allLabels = await page
         .locator("label, legend, .field-label, [class*='label' i]")
@@ -157,22 +160,56 @@ async function fillGreenhouseCustomDropdowns(page: Page, payload: ApplicantPaylo
 
       // ── Find and click the matching option ─────────────────────────────
       const optionLocator = page.locator(
-        "[role='option'], .select-dropdown--item, [class*='option' i]:not([class*='no-option' i])",
+        [
+          // Only options in active dropdown menus (avoid phone-country widget collisions).
+          ".select__menu:visible [role='option']",
+          ".select-dropdown--menu:visible .select-dropdown--item",
+          "[role='listbox']:visible [role='option']",
+        ].join(", "),
       );
       const options = await optionLocator.all();
       let matched = false;
       for (const opt of options) {
+        const isVisible = await opt.isVisible().catch(() => false);
+        if (!isVisible) continue;
+        const insidePhoneWidget = await opt
+          .evaluate((el) => !!el.closest(".iti, .intl-tel-input, [data-intl-tel-input-id]"))
+          .catch(() => false);
+        if (insidePhoneWidget) continue;
         const optText = ((await opt.textContent().catch(() => "")) ?? "").trim();
         if (!optText) continue;
         // For country, skip phone dial code options (e.g. "United States +1")
         if (isCountry && /\+\d+/.test(optText)) continue;
         if (ghMatchesOption(displayValue, optText)) {
-          await opt.click({ timeout: 3000 });
+          await opt.click({ timeout: 3000, force: true });
           matched = true;
           console.log(`[gh-dropdown] ✓ "${optText}" for /${labelPattern.source}/`);
           break;
         }
       }
+
+      // Fallback for combobox-style controls: type value and confirm with Enter.
+      if (!matched) {
+        const comboInput = page
+          .locator(
+            [
+              "input[aria-autocomplete='list']:visible",
+              "[role='combobox'] input:visible",
+              ".select__control input:visible",
+            ].join(", "),
+          )
+          .first();
+        if ((await comboInput.count()) > 0) {
+          await comboInput.fill("");
+          await comboInput.type(displayValue, { delay: 20 });
+          await page.waitForTimeout(200);
+          await comboInput.press("Enter").catch(() => {});
+          await page.waitForTimeout(200);
+          matched = true;
+          console.log(`[gh-dropdown] ↺ typed fallback "${displayValue}" for /${labelPattern.source}/`);
+        }
+      }
+
       if (!matched) {
         console.log(`[gh-dropdown] ✗ no option matched "${displayValue}" for /${labelPattern.source}/`);
         await page.keyboard.press("Escape").catch(() => {});
@@ -209,7 +246,7 @@ async function fillGreenhouseLocationField(page: Page, payload: ApplicantPayload
 
     // Try to select the first autocomplete suggestion
     const suggestion = page
-      .locator(".pac-item, [class*='autocomplete'] li, [class*='suggestion'], [role='option']")
+      .locator(".pac-item:visible, [class*='autocomplete' i] li:visible, [class*='suggestion' i]:visible")
       .first();
     if ((await suggestion.count()) > 0) {
       await suggestion.click({ timeout: 3000 });
