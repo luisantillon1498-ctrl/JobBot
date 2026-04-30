@@ -181,6 +181,20 @@ export default function NewApplication() {
       toast.info("Generating tailored resume in the background…");
       supabase.functions
         .invoke("generate-resume", { body: { application_id: data.id } })
+        .then(({ data: resumeData, error: resumeErr }) => {
+          if (resumeErr) {
+            toast.warning(`Resume generation failed: ${resumeErr.message}`);
+            return;
+          }
+          const result = resumeData as { ok?: boolean; error?: string; code?: string } | null;
+          if (!result?.ok) {
+            if (result?.code === "no_resume_data") {
+              toast.warning("Resume generation skipped: add data in Resume Wizard for this account.");
+              return;
+            }
+            toast.warning(`Resume generation failed: ${result?.error ?? "Unknown error"}`);
+          }
+        })
         .catch(() => {/* non-fatal */});
 
       navigate(`/applications/${data.id}`);

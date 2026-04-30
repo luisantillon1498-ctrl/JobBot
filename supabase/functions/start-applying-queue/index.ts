@@ -8,10 +8,12 @@ const corsHeaders = {
 };
 
 const RUNNER_TIMEOUT_MS = 120_000;
+const RESUME_GENERATION_TIMEOUT_MS = 120_000;
 // Resume calls return 202 immediately (fire-and-forget); 15 s is plenty.
 const RESUME_RUNNER_TIMEOUT_MS = 15_000;
 const SIGNED_URL_TTL_SECONDS = 2 * 60 * 60;
 const PG_INT_MAX = 2147483647;
+const QUEUE_AUTO_GENERATE_COVER = Deno.env.get("JOBPAL_QUEUE_AUTO_GENERATE_COVER") === "true";
 
 /** Persisted `applications.automation_queue_state` — same vocabulary as the executor outcome logger. */
 type QueueState =
@@ -233,7 +235,7 @@ serve(async (req) => {
     const { data: profile } = await serviceClient
       .from("profiles")
       .select(
-        "first_name, middle_name, last_name, professional_email, phone, linkedin_url, city, state_region, country, veteran_status, disability_status, gender, hispanic_ethnicity, race_ethnicity",
+        "first_name, middle_name, last_name, professional_email, phone, linkedin_url, city, state_region, country, veteran_status, disability_status, gender, hispanic_ethnicity, race_ethnicity, default_resume_document_id",
       )
       .eq("user_id", user.id)
       .single();
@@ -459,38 +461,92 @@ serve(async (req) => {
         }
       }
 
+      // Fall back to profile default resume selection.
+      if (!resumeDocumentId && profile?.default_resume_document_id) {
+        const defaultResume = await serviceClient
+          .from("documents")
+          .select("id, file_path")
+          .eq("id", profile.default_resume_document_id)
+          .eq("user_id", user.id)
+          .eq("type", "resume")
+          .maybeSingle();
+        if (defaultResume.data?.id && defaultResume.data.file_path) {
+          resumeDocumentId = defaultResume.data.id;
+          console.log(`[EF] app ${appId} — using profile default resume: ${resumeDocumentId}`);
+        }
+      }
+
+      // Last fallback before generation: newest resume in vault for this user.
+      if (!resumeDocumentId) {
+        const latestResume = await serviceClient
+          .from("documents")
+          .select("id, file_path")
+          .eq("user_id", user.id)
+          .eq("type", "resume")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (latestResume.data?.id && latestResume.data.file_path) {
+          resumeDocumentId = latestResume.data.id;
+          console.log(`[EF] app ${appId} — using latest resume from vault: ${resumeDocumentId}`);
+        }
+      }
+
       // Still no resume — generate one on the fly (mirrors cover letter generation below).
       // This handles applications that were imported before auto-resume-generation was added,
       // or cases where the user hasn't manually selected a resume.
+      let resumeResolutionReason: string | null = null;
       if (!resumeDocumentId) {
         console.log(`[EF] app ${appId} — no resume found, generating tailored resume via Edge Function`);
-        const generateRes = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/generate-resume`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            // Forward the user's JWT so generate-resume can resolve the caller via getUser().
-            // Use serviceRoleKey as the apikey header (replaces the deprecated SUPABASE_ANON_KEY).
-            Authorization: authHeader,
-            apikey: serviceRoleKey,
-          },
-          body: JSON.stringify({ application_id: appId }),
-          // Keep well under the EF wall-clock limit so a slow AI/PDF call never
-          // prevents the browser automation runner from being reached.
-          signal: AbortSignal.timeout(30_000),
-        });
-        console.log(`[EF] app ${appId} — resume gen HTTP status:`, generateRes.status);
-        if (generateRes.ok) {
-          const genBody = await generateRes.json() as { ok?: boolean; document_id?: string; error?: string; code?: string };
-          if (genBody.ok && genBody.document_id) {
-            resumeDocumentId = genBody.document_id;
-            console.log(`[EF] app ${appId} — generated resume document_id: ${resumeDocumentId}`);
+        try {
+          const generateRes = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/generate-resume`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              // Forward the user's JWT so generate-resume can resolve the caller via getUser().
+              // Use serviceRoleKey as the apikey header (replaces the deprecated SUPABASE_ANON_KEY).
+              Authorization: authHeader,
+              apikey: serviceRoleKey,
+            },
+            body: JSON.stringify({ application_id: appId }),
+            // Resume generation can include AI + PDF rendering and may exceed 30 s in real traffic.
+            signal: AbortSignal.timeout(RESUME_GENERATION_TIMEOUT_MS),
+          });
+          console.log(`[EF] app ${appId} — resume gen HTTP status:`, generateRes.status);
+          if (generateRes.ok) {
+            const genBody = await generateRes.json() as { ok?: boolean; document_id?: string; error?: string; code?: string };
+            if (genBody.ok && genBody.document_id) {
+              resumeDocumentId = genBody.document_id;
+              console.log(`[EF] app ${appId} — generated resume document_id: ${resumeDocumentId}`);
+            } else {
+              resumeResolutionReason = genBody.error ?? `generate-resume failed (${genBody.code ?? "unknown"})`;
+              console.error(`[EF] app ${appId} — generate-resume returned ok=false: code=${genBody.code} error=${genBody.error}`);
+            }
           } else {
-            console.error(`[EF] app ${appId} — generate-resume returned ok=false: code=${genBody.code} error=${genBody.error}`);
+            const errText = await generateRes.text().catch(() => "");
+            resumeResolutionReason = `generate-resume HTTP ${generateRes.status}: ${errText.slice(0, 300)}`;
+            console.error(`[EF] app ${appId} — generate-resume HTTP error ${generateRes.status}: ${errText.slice(0, 500)}`);
           }
-        } else {
-          const errText = await generateRes.text().catch(() => "");
-          console.error(`[EF] app ${appId} — generate-resume HTTP error ${generateRes.status}: ${errText.slice(0, 500)}`);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "generate-resume call failed";
+          resumeResolutionReason = reason;
+          console.error(`[EF] app ${appId} — generate-resume fetch failed: ${reason}`);
         }
+      }
+
+      // Resume is required for queue handoff. Do not proceed to cover-generation or runner without it.
+      if (!resumeDocumentId) {
+        const reason = resumeResolutionReason ?? "Could not resolve or generate a resume for this application";
+        await logState({
+          appId,
+          state: "waiting_for_human_action",
+          description: "Queue paused: resume generation is required before autofill can continue",
+          reason,
+          context: { hard_blocker: true, handoff_category: "resume_generation_failed" },
+        });
+        outcomes.push({ application_id: appId, state: "waiting_for_human_action", hard_blocker: true, reason });
+        hardStop = true;
+        continue;
       }
 
       // Pin whichever resume we resolved (default, linked, or freshly generated) so future
@@ -502,6 +558,34 @@ serve(async (req) => {
           .eq("id", appId)
           .eq("user_id", user.id)
           .neq("submission_status", "submitted");
+      }
+
+      // Require a concrete resume file path before any cover generation or runner handoff.
+      // A stale/missing document row can leave us with an ID but no usable file.
+      const resumeRecord = resumeDocumentId
+        ? await serviceClient
+            .from("documents")
+            .select("id, file_path")
+            .eq("id", resumeDocumentId)
+            .eq("user_id", user.id)
+            .maybeSingle()
+        : { data: null, error: null };
+      const resolvedResumePath = resumeRecord.data?.file_path ?? null;
+      if (!resolvedResumePath) {
+        const reason =
+          resumeResolutionReason ??
+          resumeRecord.error?.message ??
+          "Resolved resume document is missing or has no file_path";
+        await logState({
+          appId,
+          state: "waiting_for_human_action",
+          description: "Queue paused: no usable resume file found for this application",
+          reason,
+          context: { hard_blocker: true, handoff_category: "resume_generation_failed" },
+        });
+        outcomes.push({ application_id: appId, state: "waiting_for_human_action", hard_blocker: true, reason });
+        hardStop = true;
+        continue;
       }
 
       if (!coverDocumentId) {
@@ -539,16 +623,7 @@ serve(async (req) => {
       }
 
       console.log(`[EF] app ${appId} — resumeDocId:`, resumeDocumentId ?? "(none)", "coverDocId before gen:", coverDocumentId ?? "(none)");
-      if (!coverDocumentId) {
-        const resumeForGeneration = resumeDocumentId
-          ? await serviceClient
-              .from("documents")
-              .select("file_path")
-              .eq("id", resumeDocumentId)
-              .eq("user_id", user.id)
-              .maybeSingle()
-          : { data: null };
-
+      if (!coverDocumentId && QUEUE_AUTO_GENERATE_COVER) {
         console.log(`[EF] app ${appId} — generating cover letter via Edge Function`);
         const generateRes = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/generate-cover-letter`, {
           method: "POST",
@@ -564,7 +639,7 @@ serve(async (req) => {
             job_title: app.job_title ?? "",
             company_name: app.company_name ?? "",
             job_description: app.job_description ?? "",
-            resume_path: resumeForGeneration.data?.file_path ?? null,
+            resume_path: resolvedResumePath,
           }),
           signal: AbortSignal.timeout(60_000),
         });
@@ -589,6 +664,9 @@ serve(async (req) => {
             });
           }
         }
+      }
+      if (!coverDocumentId && !QUEUE_AUTO_GENERATE_COVER) {
+        console.log(`[EF] app ${appId} — skipping auto cover generation (JOBPAL_QUEUE_AUTO_GENERATE_COVER != true)`);
       }
 
       if (!app.submitted_cover_document_id && coverDocumentId) {

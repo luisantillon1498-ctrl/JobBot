@@ -375,6 +375,7 @@ export type Database = {
           postal_code: string | null
           professional_email: string | null
           race_ethnicity: string | null
+          resume_wizard_page_limit: number
           state_region: string | null
           updated_at: string
           user_id: string
@@ -404,6 +405,7 @@ export type Database = {
           postal_code?: string | null
           professional_email?: string | null
           race_ethnicity?: string | null
+          resume_wizard_page_limit?: number
           state_region?: string | null
           updated_at?: string
           user_id: string
@@ -433,6 +435,7 @@ export type Database = {
           postal_code?: string | null
           professional_email?: string | null
           race_ethnicity?: string | null
+          resume_wizard_page_limit?: number
           state_region?: string | null
           updated_at?: string
           user_id?: string

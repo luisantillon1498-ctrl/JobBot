@@ -39,6 +39,7 @@ interface ProfileRow {
   city: string | null;
   state_region: string | null;
   country: string | null;
+  resume_wizard_page_limit: number | null;
 }
 
 interface ApplicationRow {
@@ -78,6 +79,77 @@ interface AIResponse {
   selected_academics: SelectedAcademic[];
   selected_skills: SelectedSkill[];
   personal_interests: string;
+}
+
+function buildHeuristicResumeSelection(features: ResumeFeatureRow[]): AIResponse {
+  const byType = {
+    professional_experience: [] as ResumeFeatureRow[],
+    academics: [] as ResumeFeatureRow[],
+    extracurriculars: [] as ResumeFeatureRow[],
+    skills_and_certifications: [] as ResumeFeatureRow[],
+    personal: [] as ResumeFeatureRow[],
+  };
+  for (const f of features) {
+    byType[f.feature_type].push(f);
+  }
+
+  const selected_experience: SelectedExperience[] = byType.professional_experience
+    .slice(0, 4)
+    .map((f) => ({
+      role_title: f.role_title || "Experience",
+      company_name: f.company || "",
+      location: f.location || "",
+      from_date: f.from_date ?? "",
+      to_date: f.to_date ?? "",
+      bullets: Array.isArray(f.description_lines) ? f.description_lines.filter(Boolean).slice(0, 4) : [],
+    }));
+
+  const selected_academics: SelectedAcademic[] = byType.academics.map((f) => ({
+    degree: f.degree || "",
+    major: f.major || "",
+    school: f.company || "",
+    location: f.location || "",
+    from_date: f.from_date ?? "",
+    to_date: f.to_date ?? "",
+    bullets: Array.isArray(f.description_lines) ? f.description_lines.filter(Boolean).slice(0, 3) : [],
+  }));
+
+  const selected_skills: SelectedSkill[] = byType.skills_and_certifications.map((f) => ({
+    category: f.role_title?.trim() || "Skills",
+    bullets: (Array.isArray(f.description_lines) ? f.description_lines.filter(Boolean) : []).slice(0, 8),
+  }));
+
+  const personal_interests = byType.personal
+    .flatMap((f) => [f.role_title, ...(Array.isArray(f.description_lines) ? f.description_lines : [])])
+    .map((v) => (v ?? "").trim())
+    .filter(Boolean)
+    .join(", ");
+
+  return {
+    selected_experience,
+    selected_academics,
+    selected_skills,
+    personal_interests,
+  };
+}
+
+function applyResumePageLimitSelection(input: AIResponse, pageLimit: number): AIResponse {
+  if (pageLimit >= 3) return input;
+  if (pageLimit === 2) {
+    return {
+      ...input,
+      selected_experience: input.selected_experience.slice(0, 5).map((e) => ({ ...e, bullets: e.bullets.slice(0, 3) })),
+      selected_academics: input.selected_academics.slice(0, 2).map((a) => ({ ...a, bullets: a.bullets.slice(0, 2) })),
+      selected_skills: input.selected_skills.slice(0, 4).map((s) => ({ ...s, bullets: s.bullets.slice(0, 6) })),
+    };
+  }
+  return {
+    ...input,
+    selected_experience: input.selected_experience.slice(0, 3).map((e) => ({ ...e, bullets: e.bullets.slice(0, 2) })),
+    selected_academics: input.selected_academics.slice(0, 1).map((a) => ({ ...a, bullets: a.bullets.slice(0, 1) })),
+    selected_skills: input.selected_skills.slice(0, 3).map((s) => ({ ...s, bullets: s.bullets.slice(0, 4) })),
+    personal_interests: (input.personal_interests ?? "").slice(0, 140),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -482,34 +554,33 @@ function buildResumeHtml(
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      font-family: Arial, Helvetica, sans-serif;
-      font-size: 10.5pt;
-      color: #111;
+      font-family: 'Times New Roman', Times, serif;
+      font-size: 10pt;
+      color: #000;
       background: #fff;
-      padding: 0.6in 0.65in;
-      line-height: 1.35;
+      padding: .5in;
+      line-height: 1.2;
     }
 
     /* Header */
     .resume-name {
-      font-family: Georgia, "Times New Roman", serif;
-      font-size: 22pt;
+      font-size: 10pt;
       font-weight: bold;
       text-transform: uppercase;
       text-align: center;
       letter-spacing: 0.04em;
-      margin-bottom: 4px;
+      margin-bottom: 1pt;
     }
 
     .resume-contact {
       text-align: center;
-      font-size: 9.5pt;
-      color: #333;
-      margin-bottom: 16px;
+      font-size: 10pt;
+      color: #000;
+      margin-bottom: 2pt;
     }
 
     .resume-contact a {
-      color: #333;
+      color: #000;
       text-decoration: none;
     }
 
@@ -518,13 +589,13 @@ function buildResumeHtml(
       display: flex;
       align-items: center;
       gap: 6px;
-      margin-top: 14px;
-      margin-bottom: 5px;
+      margin-top: 7pt;
+      margin-bottom: 3pt;
     }
 
     .section-header span {
       font-weight: bold;
-      font-size: 9.5pt;
+      font-size: 10pt;
       letter-spacing: 0.08em;
       white-space: nowrap;
     }
@@ -537,7 +608,7 @@ function buildResumeHtml(
 
     /* Entry */
     .entry {
-      margin-bottom: 9px;
+      margin-bottom: 3pt;
     }
 
     .entry-header {
@@ -548,30 +619,30 @@ function buildResumeHtml(
 
     .entry-title {
       font-weight: bold;
-      font-size: 10.5pt;
+      font-size: 10pt;
     }
 
     .entry-date {
-      font-size: 9.5pt;
+      font-size: 10pt;
       color: #333;
       white-space: nowrap;
       margin-left: 8px;
     }
 
     .entry-sub {
-      font-size: 9.5pt;
+      font-size: 10pt;
       color: #333;
-      margin-bottom: 3px;
+      margin-bottom: 1pt;
     }
 
     ul {
-      margin-left: 18px;
-      margin-top: 2px;
+      margin-left: 13pt;
+      margin-top: 1pt;
     }
 
     ul li {
       font-size: 10pt;
-      margin-bottom: 1px;
+      margin-bottom: 0;
     }
 
     /* Skills */
@@ -596,8 +667,9 @@ function buildResumeHtml(
     /* Interests */
     .interests {
       font-size: 10pt;
-      color: #222;
+      color: #000;
     }
+    @page { size: letter; margin: 0; }
   </style>
 </head>
 <body>
@@ -663,6 +735,11 @@ serve(async (req) => {
     const anthropicModel = (Deno.env.get("ANTHROPIC_MODEL") ?? ANTHROPIC_MODEL_DEFAULT).trim() || ANTHROPIC_MODEL_DEFAULT;
     const geminiModel = (Deno.env.get("GEMINI_MODEL") ?? GEMINI_MODEL_DEFAULT).trim() || GEMINI_MODEL_DEFAULT;
     const runnerUrl = (Deno.env.get("JOBPAL_AUTOMATION_RUNNER_URL") ?? "").replace(/\/$/, "");
+    // Accept either base URL or /run endpoint in env, mirroring queue handoff behavior.
+    // Example:
+    // - https://runner.example.com/run   -> https://runner.example.com
+    // - https://runner.example.com       -> https://runner.example.com
+    const runnerBaseUrl = runnerUrl.replace(/\/run\/?$/, "");
     const runnerToken = (Deno.env.get("JOBPAL_AUTOMATION_RUNNER_TOKEN") ?? "").trim();
 
     if (!geminiApiKey && !anthropicApiKey) {
@@ -699,7 +776,7 @@ serve(async (req) => {
     // --- Fetch profile ---
     const { data: profileRow } = await userClient
       .from("profiles")
-      .select("full_name, professional_email, phone, linkedin_url, city, state_region, country")
+      .select("full_name, professional_email, phone, linkedin_url, city, state_region, country, resume_wizard_page_limit")
       .eq("user_id", user.id)
       .single();
 
@@ -713,6 +790,7 @@ serve(async (req) => {
     const locationParts = [profile?.city, profile?.state_region, profile?.country].filter(Boolean);
     const location = locationParts.join(", ");
     const fullName = profile?.full_name?.trim() || "Resume";
+    const pageLimit = Math.min(3, Math.max(1, Number(profile?.resume_wizard_page_limit ?? 1)));
 
     // --- Fetch resume_features ---
     const { data: featuresRaw, error: featErr } = await userClient
@@ -854,6 +932,7 @@ Instructions:
 - Include personal interests if present
 - Keep bullets concise (1-2 lines each)
 - Do NOT invent experience or skills not in the source data
+- Resume page limit selected by user in Resume Wizard: ${pageLimit} page(s). Keep content within this limit.
 
 Return this exact JSON structure:
 {
@@ -877,21 +956,25 @@ Return this exact JSON structure:
       aiResult = await callAnthropic(anthropicApiKey, anthropicModel, userPrompt);
     }
 
-    if (!aiResult.ok) {
-      return jsonOk({ ok: false, error: aiResult.error, code: aiResult.code });
-    }
-
-    // --- Parse AI JSON response ---
+    // --- Parse AI JSON response (with deterministic fallback when provider is overloaded) ---
     let aiData: AIResponse;
-    try {
-      aiData = parseAIJson(aiResult.text);
-    } catch (parseErr) {
-      console.error("Failed to parse AI JSON:", aiResult.text.slice(0, 500), parseErr);
-      return jsonOk({
-        ok: false,
-        error: "AI returned malformed JSON. Please try again.",
-        code: "parse_error",
-      });
+    let generationMode: "ai" | "fallback_heuristic" = "ai";
+    if (!aiResult.ok) {
+      const fallbackCodes = new Set(["provider_unavailable", "rate_limited", "empty_completion"]);
+      if (!fallbackCodes.has(aiResult.code)) {
+        return jsonOk({ ok: false, error: aiResult.error, code: aiResult.code });
+      }
+      console.warn("AI provider unavailable; using heuristic resume fallback:", aiResult.code, aiResult.error);
+      aiData = buildHeuristicResumeSelection(features);
+      generationMode = "fallback_heuristic";
+    } else {
+      try {
+        aiData = parseAIJson(aiResult.text);
+      } catch (parseErr) {
+        console.error("Failed to parse AI JSON; using heuristic fallback:", aiResult.text.slice(0, 500), parseErr);
+        aiData = buildHeuristicResumeSelection(features);
+        generationMode = "fallback_heuristic";
+      }
     }
 
     // Ensure arrays are present (defensive defaults)
@@ -899,6 +982,7 @@ Return this exact JSON structure:
     aiData.selected_academics = Array.isArray(aiData.selected_academics) ? aiData.selected_academics : [];
     aiData.selected_skills = Array.isArray(aiData.selected_skills) ? aiData.selected_skills : [];
     aiData.personal_interests = typeof aiData.personal_interests === "string" ? aiData.personal_interests : "";
+    aiData = applyResumePageLimitSelection(aiData, pageLimit);
 
     // Save the AI's content selection so future generations can learn from outcomes
     await userClient.from("generated_artifacts").insert({
@@ -906,7 +990,10 @@ Return this exact JSON structure:
       user_id: user.id,
       type: "resume_content",
       content: JSON.stringify(aiData),
-      prompt_used: userPrompt.slice(0, 8000), // cap to avoid DB size issues
+      prompt_used:
+        generationMode === "ai"
+          ? userPrompt.slice(0, 8000)
+          : `HEURISTIC_FALLBACK\nreason=ai_provider_unavailable_or_malformed\n${userPrompt.slice(0, 7800)}`,
       generator_version: RESUME_GENERATOR_VERSION,
     }).then(({ error: artifactErr }) => {
       if (artifactErr) console.warn("resume_content artifact insert:", artifactErr);
@@ -921,7 +1008,7 @@ Return this exact JSON structure:
     // --- Call runner /generate-pdf ---
     let pdfBytes: ArrayBuffer;
     try {
-      const pdfRes = await fetch(`${runnerUrl}/generate-pdf`, {
+      const pdfRes = await fetch(`${runnerBaseUrl}/generate-pdf`, {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${runnerToken}`,
@@ -1028,6 +1115,7 @@ Return this exact JSON structure:
       storage_path: storagePath,
       document_id: documentId,
       generator_version: RESUME_GENERATOR_VERSION,
+      generation_mode: generationMode,
     });
   } catch (e) {
     console.error("Unexpected error:", e);

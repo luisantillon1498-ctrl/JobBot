@@ -53,6 +53,7 @@ interface Profile {
   city: string | null;
   state_region: string | null;
   country: string | null;
+  resume_wizard_page_limit: number | null;
 }
 
 // ─── Draft state for add/edit ─────────────────────────────────────────────────
@@ -1056,7 +1057,7 @@ export default function ResumeWizard() {
     const { data, error } = await supabase
       .from("profiles")
       .select(
-        "full_name, first_name, last_name, professional_email, phone, phone_country_code, linkedin_url, city, state_region, country",
+        "full_name, first_name, last_name, professional_email, phone, phone_country_code, linkedin_url, city, state_region, country, resume_wizard_page_limit",
       )
       .eq("user_id", user.id)
       .single();
@@ -1065,7 +1066,10 @@ export default function ResumeWizard() {
       console.error(error);
       toast.error("Could not load profile.");
     } else {
-      setProfile(data as Profile);
+      const nextProfile = data as Profile;
+      setProfile(nextProfile);
+      const persistedLimit = Number(nextProfile.resume_wizard_page_limit ?? 1);
+      setPageLimit(persistedLimit >= 1 && persistedLimit <= 3 ? persistedLimit : 1);
     }
     setProfileLoading(false);
   }, [user]);
@@ -1101,6 +1105,20 @@ export default function ResumeWizard() {
 
   // ── Page limit for export ─────────────────────────────────────────────────────
   const [pageLimit, setPageLimit] = useState(1);
+
+  const persistPageLimit = useCallback(async (nextLimit: number) => {
+    if (!user) return;
+    const { error } = await supabase
+      .from("profiles")
+      .update({ resume_wizard_page_limit: nextLimit })
+      .eq("user_id", user.id);
+    if (error) {
+      console.error(error);
+      toast.error("Could not save page limit setting.");
+      return;
+    }
+    setProfile((prev) => (prev ? { ...prev, resume_wizard_page_limit: nextLimit } : prev));
+  }, [user]);
 
   // ── Export selection (empty set = everything checked by default) ─────────────
   const [unchecked, setUnchecked] = useState<Set<string>>(new Set());
@@ -1274,7 +1292,10 @@ export default function ResumeWizard() {
                 <button
                   key={n}
                   type="button"
-                  onClick={() => setPageLimit(n)}
+                  onClick={() => {
+                    setPageLimit(n);
+                    void persistPageLimit(n);
+                  }}
                   className={`h-7 w-7 text-xs rounded-md border font-medium transition-colors ${
                     pageLimit === n
                       ? "bg-primary text-primary-foreground border-primary"
