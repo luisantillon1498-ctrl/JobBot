@@ -16,6 +16,8 @@ import { toast } from "sonner";
 import { ArrowUp, ArrowDown, Pencil, Trash2, X, Plus, Upload, FileText, CheckCircle2, AlertCircle, Download } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
+const PAGE_LIMIT_STORAGE_KEY = "jobpal.resume_wizard_page_limit";
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type FeatureType =
@@ -1046,6 +1048,12 @@ function SectionCard({ label, featureType, features, onSaved, userId, isHeaderCh
 
 export default function ResumeWizard() {
   const { user } = useAuth();
+  const initialPageLimit = (() => {
+    if (typeof window === "undefined") return 1;
+    const raw = window.localStorage.getItem(PAGE_LIMIT_STORAGE_KEY);
+    const parsed = Number(raw ?? 1);
+    return parsed >= 1 && parsed <= 3 ? parsed : 1;
+  })();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [profileLoading, setProfileLoading] = useState(true);
   const [features, setFeatures] = useState<ResumeFeature[]>([]);
@@ -1069,7 +1077,11 @@ export default function ResumeWizard() {
       const nextProfile = data as Profile;
       setProfile(nextProfile);
       const persistedLimit = Number(nextProfile.resume_wizard_page_limit ?? 1);
-      setPageLimit(persistedLimit >= 1 && persistedLimit <= 3 ? persistedLimit : 1);
+      const resolvedLimit = persistedLimit >= 1 && persistedLimit <= 3 ? persistedLimit : 1;
+      setPageLimit(resolvedLimit);
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(PAGE_LIMIT_STORAGE_KEY, String(resolvedLimit));
+      }
     }
     setProfileLoading(false);
   }, [user]);
@@ -1104,10 +1116,13 @@ export default function ResumeWizard() {
   const [importState, setImportState] = useState<ImportState>({ status: "idle" });
 
   // ── Page limit for export ─────────────────────────────────────────────────────
-  const [pageLimit, setPageLimit] = useState(1);
+  const [pageLimit, setPageLimit] = useState(initialPageLimit);
 
   const persistPageLimit = useCallback(async (nextLimit: number) => {
     if (!user) return;
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(PAGE_LIMIT_STORAGE_KEY, String(nextLimit));
+    }
     const { error } = await supabase
       .from("profiles")
       .update({ resume_wizard_page_limit: nextLimit })

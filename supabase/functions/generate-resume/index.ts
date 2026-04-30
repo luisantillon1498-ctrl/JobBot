@@ -74,9 +74,19 @@ interface SelectedSkill {
   bullets: string[];
 }
 
+interface SelectedExtracurricular {
+  role_title: string;
+  organization: string;
+  location: string;
+  from_date: string;
+  to_date: string;
+  bullets: string[];
+}
+
 interface AIResponse {
   selected_experience: SelectedExperience[];
   selected_academics: SelectedAcademic[];
+  selected_extracurriculars: SelectedExtracurricular[];
   selected_skills: SelectedSkill[];
   personal_interests: string;
 }
@@ -119,6 +129,15 @@ function buildHeuristicResumeSelection(features: ResumeFeatureRow[]): AIResponse
     bullets: (Array.isArray(f.description_lines) ? f.description_lines.filter(Boolean) : []).slice(0, 8),
   }));
 
+  const selected_extracurriculars: SelectedExtracurricular[] = byType.extracurriculars.map((f) => ({
+    role_title: f.role_title || "",
+    organization: f.company || "",
+    location: f.location || "",
+    from_date: f.from_date ?? "",
+    to_date: f.to_date ?? "",
+    bullets: Array.isArray(f.description_lines) ? f.description_lines.filter(Boolean).slice(0, 3) : [],
+  }));
+
   const personal_interests = byType.personal
     .flatMap((f) => [f.role_title, ...(Array.isArray(f.description_lines) ? f.description_lines : [])])
     .map((v) => (v ?? "").trim())
@@ -128,6 +147,7 @@ function buildHeuristicResumeSelection(features: ResumeFeatureRow[]): AIResponse
   return {
     selected_experience,
     selected_academics,
+    selected_extracurriculars,
     selected_skills,
     personal_interests,
   };
@@ -138,17 +158,19 @@ function applyResumePageLimitSelection(input: AIResponse, pageLimit: number): AI
   if (pageLimit === 2) {
     return {
       ...input,
-      selected_experience: input.selected_experience.slice(0, 5).map((e) => ({ ...e, bullets: e.bullets.slice(0, 3) })),
-      selected_academics: input.selected_academics.slice(0, 2).map((a) => ({ ...a, bullets: a.bullets.slice(0, 2) })),
+      selected_experience: input.selected_experience.slice(0, 5).map((e) => ({ ...e, bullets: e.bullets.slice(0, 4) })),
+      selected_academics: input.selected_academics.slice(0, 3).map((a) => ({ ...a, bullets: a.bullets.slice(0, 3) })),
+      selected_extracurriculars: input.selected_extracurriculars.slice(0, 2).map((x) => ({ ...x, bullets: x.bullets.slice(0, 2) })),
       selected_skills: input.selected_skills.slice(0, 4).map((s) => ({ ...s, bullets: s.bullets.slice(0, 6) })),
     };
   }
   return {
     ...input,
-    selected_experience: input.selected_experience.slice(0, 3).map((e) => ({ ...e, bullets: e.bullets.slice(0, 2) })),
-    selected_academics: input.selected_academics.slice(0, 1).map((a) => ({ ...a, bullets: a.bullets.slice(0, 1) })),
-    selected_skills: input.selected_skills.slice(0, 3).map((s) => ({ ...s, bullets: s.bullets.slice(0, 4) })),
-    personal_interests: (input.personal_interests ?? "").slice(0, 140),
+    selected_experience: input.selected_experience.slice(0, 4).map((e) => ({ ...e, bullets: e.bullets.slice(0, 4) })),
+    selected_academics: input.selected_academics.slice(0, 2).map((a) => ({ ...a, bullets: a.bullets.slice(0, 2) })),
+    selected_extracurriculars: input.selected_extracurriculars.slice(0, 2).map((x) => ({ ...x, bullets: x.bullets.slice(0, 2) })),
+    selected_skills: input.selected_skills.slice(0, 4).map((s) => ({ ...s, bullets: s.bullets.slice(0, 6) })),
+    personal_interests: (input.personal_interests ?? "").slice(0, 240),
   };
 }
 
@@ -510,6 +532,29 @@ function buildResumeHtml(
       )
       .join("")}`;
 
+  // Extracurricular section
+  const extracurricularHtml = aiData.selected_extracurriculars.length === 0
+    ? ""
+    : `
+    ${sectionHeader("COMMUNITY")}
+    ${aiData.selected_extracurriculars
+      .map(
+        (x) => `
+      <div class="entry">
+        <div class="entry-header">
+          <span class="entry-title">${esc(x.role_title || x.organization)}</span>
+          <span class="entry-date">${dateLine(x.from_date, x.to_date)}</span>
+        </div>
+        <div class="entry-sub">${esc([x.organization, x.location].filter(Boolean).join(" • "))}</div>
+        ${
+          x.bullets.length > 0
+            ? `<ul>${x.bullets.map((b) => `<li>${esc(b)}</li>`).join("")}</ul>`
+            : ""
+        }
+      </div>`,
+      )
+      .join("")}`;
+
   // Skills section
   const skillsHtml = aiData.selected_skills.length === 0
     ? ""
@@ -685,6 +730,7 @@ function buildResumeHtml(
 
   ${experienceHtml}
   ${academicsHtml}
+  ${extracurricularHtml}
   ${skillsHtml}
   ${interestsHtml}
 </body>
@@ -938,6 +984,7 @@ Return this exact JSON structure:
 {
   "selected_experience": [{ "role_title": "...", "company_name": "...", "location": "...", "from_date": "...", "to_date": "...", "bullets": ["..."] }],
   "selected_academics": [{ "degree": "...", "major": "...", "school": "...", "location": "...", "from_date": "...", "to_date": "...", "bullets": ["..."] }],
+  "selected_extracurriculars": [{ "role_title": "...", "organization": "...", "location": "...", "from_date": "...", "to_date": "...", "bullets": ["..."] }],
   "selected_skills": [{ "category": "...", "bullets": ["..."] }],
   "personal_interests": "..."
 }`;
@@ -980,6 +1027,7 @@ Return this exact JSON structure:
     // Ensure arrays are present (defensive defaults)
     aiData.selected_experience = Array.isArray(aiData.selected_experience) ? aiData.selected_experience : [];
     aiData.selected_academics = Array.isArray(aiData.selected_academics) ? aiData.selected_academics : [];
+    aiData.selected_extracurriculars = Array.isArray(aiData.selected_extracurriculars) ? aiData.selected_extracurriculars : [];
     aiData.selected_skills = Array.isArray(aiData.selected_skills) ? aiData.selected_skills : [];
     aiData.personal_interests = typeof aiData.personal_interests === "string" ? aiData.personal_interests : "";
     aiData = applyResumePageLimitSelection(aiData, pageLimit);
@@ -1099,6 +1147,16 @@ Return this exact JSON structure:
       // Log but don't fail — the document exists, the link is cosmetic
       console.warn("application_documents insert error (non-fatal):", junctionErr);
     }
+
+    // Pin the generated resume to the application to avoid duplicate regeneration in queue runs.
+    await userClient
+      .from("applications")
+      .update({ submitted_resume_document_id: documentId })
+      .eq("id", application_id)
+      .eq("user_id", user.id)
+      .then(({ error: appUpdateErr }) => {
+        if (appUpdateErr) console.warn("applications.submitted_resume_document_id update (non-fatal):", appUpdateErr);
+      });
 
     // --- Log event ---
     await userClient.from("application_events").insert({

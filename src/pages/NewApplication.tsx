@@ -177,25 +177,50 @@ export default function NewApplication() {
 
       toast.success("Application created");
 
-      // Fire-and-forget: generate a tailored resume in the background
-      toast.info("Generating tailored resume in the background…");
-      supabase.functions
-        .invoke("generate-resume", { body: { application_id: data.id } })
-        .then(({ data: resumeData, error: resumeErr }) => {
-          if (resumeErr) {
-            toast.warning(`Resume generation failed: ${resumeErr.message}`);
-            return;
-          }
-          const result = resumeData as { ok?: boolean; error?: string; code?: string } | null;
-          if (!result?.ok) {
-            if (result?.code === "no_resume_data") {
-              toast.warning("Resume generation skipped: add data in Resume Wizard for this account.");
+      const { data: existingResume } = await supabase
+        .from("documents")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("type", "resume")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (existingResume?.id) {
+        await supabase
+          .from("applications")
+          .update({ submitted_resume_document_id: existingResume.id })
+          .eq("id", data.id)
+          .eq("user_id", user.id);
+      } else {
+        // Fire-and-forget: generate a tailored resume in the background (first-time users only)
+        toast.info("Generating tailored resume in the background…");
+        supabase.functions
+          .invoke("generate-resume", { body: { application_id: data.id } })
+          .then(async ({ data: resumeData, error: resumeErr }) => {
+            if (resumeErr) {
+              toast.warning(`Resume generation failed: ${resumeErr.message}`);
               return;
             }
-            toast.warning(`Resume generation failed: ${result?.error ?? "Unknown error"}`);
-          }
-        })
-        .catch(() => {/* non-fatal */});
+            const result = resumeData as { ok?: boolean; error?: string; code?: string; document_id?: string } | null;
+            if (!result?.ok) {
+              if (result?.code === "no_resume_data") {
+                toast.warning("Resume generation skipped: add data in Resume Wizard for this account.");
+                return;
+              }
+              toast.warning(`Resume generation failed: ${result?.error ?? "Unknown error"}`);
+              return;
+            }
+            if (result.document_id) {
+              await supabase
+                .from("applications")
+                .update({ submitted_resume_document_id: result.document_id })
+                .eq("id", data.id)
+                .eq("user_id", user.id);
+            }
+          })
+          .catch(() => {/* non-fatal */});
+      }
 
       navigate(`/applications/${data.id}`);
     } finally {
